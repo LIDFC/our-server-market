@@ -461,6 +461,14 @@ public final class MarketService {
         return database.read(connection -> market.trade(connection, id));
     }
 
+    /** What one side of a trade put up. Used to show a player what they are being offered before they answer. */
+    public List<StoredItem> tradeItems(long tradeId, TradeParty side) {
+        return database.read(connection -> market.escrowOf(connection, null, tradeId, EscrowState.HELD).stream()
+                .filter(item -> item.side() == side)
+                .map(EscrowItem::item)
+                .toList());
+    }
+
     public List<site.vinoff.market.core.model.MarketEventRecord> events(long sinceId, int limit) {
         return database.read(connection -> market.events(connection, sinceId, limit));
     }

@@ -1,5 +1,6 @@
 package site.vinoff.market.gui;
 
+import java.util.ArrayList;
 import java.util.List;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
@@ -29,7 +30,8 @@ public final class SelectionWindow extends MarketWindow {
     private final String recipient;
     private final Long answeringListing;
     private final Selection selection = new Selection(MarketService.MAX_ITEMS_PER_LISTING);
-    private boolean wantMode;
+    /** whether this window has a second half at all: a giveaway wants nothing back */
+    private final boolean twoSided;
     /** a second click on "publish" before the first one finished must not start a second listing */
     private boolean submitting;
 
@@ -39,6 +41,8 @@ public final class SelectionWindow extends MarketWindow {
         this.type = type;
         this.recipient = recipient;
         this.answeringListing = answeringListing;
+        // an offer on somebody else's listing only has one side: you cannot ask for something back
+        this.twoSided = answeringListing == null && (type == ListingType.TRADE || type == ListingType.WANTED);
     }
 
     public static SelectionWindow forCreating(Gui gui, ListingType type, String recipient) {
@@ -67,50 +71,104 @@ public final class SelectionWindow extends MarketWindow {
             }
             boolean offered = selection.isOffered(slot);
             boolean wanted = selection.isWanted(slot);
-            String mark = offered ? "ОТДАЮ" : wanted ? "ХОЧУ" : "клик — выбрать";
+            String mark = offered ? "► ОТДАЮ ЭТО" : wanted ? "► ХОЧУ ЭТО ВЗАМЕН" : null;
+            String left = offered ? "ЛКМ — убрать из «отдаю»" : "ЛКМ — отдать это";
+            String right = !twoSided ? null : wanted ? "ПКМ — убрать из «хочу»" : "ПКМ — хочу такое взамен";
             int chosenSlot = slot;
             set(
                     slot,
-                    Icons.preview(stack, PaperItemCodec.summary(stack), mark, offered || wanted ? "клик — убрать" : null),
-                    (clicker, click) -> toggle(clicker, chosenSlot));
+                    Icons.preview(stack, PaperItemCodec.summary(stack), mark, left, right),
+                    (clicker, click) -> toggle(clicker, chosenSlot, click));
         }
 
-        boolean canWant = answeringListing == null && (type == ListingType.TRADE || type == ListingType.WANTED);
-        if (canWant) {
-            set(
-                    45,
-                    Icons.button(
-                            wantMode ? Material.LIME_DYE : Material.GRAY_DYE,
-                            wantMode ? "Отмечаю: ЧТО ХОЧУ" : "Отмечаю: ЧТО ОТДАЮ",
-                            "Клик — переключить"),
-                    (clicker, click) -> {
-                        wantMode = !wantMode;
-                        gui.windows().refresh(clicker);
-                    });
+        set(45, legend());
+        if (answeringListing != null) {
+            // answering somebody: show what their listing is, so the offer is not made blind
+            set(46, theirListing());
         }
         set(
                 48,
-                Icons.button(Material.BARRIER, "Отмена", "Ничего не произойдёт"),
+                Icons.button(Material.BARRIER, "Отмена", "Ничего не произойдёт, вещи останутся у вас"),
                 (clicker, click) -> gui.openMain(clicker));
-        set(
-                50,
-                Icons.button(
-                        Material.EMERALD,
-                        answeringListing == null ? "Выложить на рынок" : "Отправить предложение",
-                        "Отдаю: " + selection.offeredCount() + " стак(ов)",
-                        canWant ? "Хочу: " + selection.wantedCount() + " стак(ов)" : null),
-                (clicker, click) -> confirm(clicker));
+        set(50, confirmButton(), (clicker, click) -> confirm(clicker));
         fillEmpty();
     }
 
-    private void toggle(Player player, int slot) {
+    /** The emerald says exactly what will happen, item by item: a count alone is not enough to press it. */
+    private ItemStack confirmButton() {
+        List<String> lines = new ArrayList<>();
+        lines.add(selection.offeredCount() == 0 ? "Вы пока ничего не отметили" : "Вы отдаёте:");
+        for (ItemBlob blob : selection.offered()) {
+            lines.add("  • " + blob.summary());
+        }
+        if (twoSided) {
+            lines.add(selection.wantedCount() == 0 ? "Взамен: что угодно (не указано)" : "Хотите взамен:");
+            for (ItemBlob blob : selection.wantedItems()) {
+                lines.add("  • " + blob.summary());
+            }
+        }
+        lines.add(" ");
+        lines.add(answeringListing == null ? "Клик — выложить на рынок" : "Клик — отправить предложение");
+        lines.add("Отмеченное «отдаю» уйдёт рынку на хранение");
+        lines.add("и вернётся, если сделка не состоится");
+        return Icons.button(
+                selection.empty() ? Material.GRAY_DYE : Material.EMERALD,
+                answeringListing == null ? "Выложить на рынок" : "Отправить предложение",
+                lines.toArray(new String[0]));
+    }
+
+    /** The listing being answered, spelled out: what you get and what its author asked for. */
+    private ItemStack theirListing() {
+        Listing listing = gui.market().listing(answeringListing).orElse(null);
+        if (listing == null) {
+            return Icons.button(Material.BARRIER, "Лот уже закрыт");
+        }
+        List<String> lines = new ArrayList<>();
+        lines.add("Вы получите:");
+        listing.offered().forEach(item -> lines.add("  • " + item.item().summary()));
+        if (listing.offered().isEmpty()) {
+            lines.add("  • ничего (заявка)");
+        }
+        if (!listing.wanted().isEmpty()) {
+            lines.add("Автор хочет за это:");
+            listing.wanted().forEach(item -> lines.add("  • " + item.item().summary()));
+        } else {
+            lines.add("Автор не указал, что хочет");
+        }
+        return Icons.button(Material.PAPER, "Лот #" + listing.id(), lines.toArray(new String[0]));
+    }
+
+    private ItemStack legend() {
+        if (answeringListing != null) {
+            return Icons.button(
+                    Material.BOOK,
+                    "Как это работает",
+                    "Кликните по своим вещам снизу —",
+                    "это и будет ваше предложение.",
+                    "Справа написано, что предлагают вам.");
+        }
+        if (!twoSided) {
+            return Icons.button(Material.BOOK, "Как это работает", "Кликните по своим вещам снизу —", "они станут лотом");
+        }
+        return Icons.button(
+                Material.BOOK,
+                "Как это работает",
+                "ЛКМ по вещи — я это отдаю",
+                "ПКМ по вещи — я такое хочу взамен",
+                "(для «хочу» вещь остаётся у вас,",
+                " это просто пожелание)");
+    }
+
+    private void toggle(Player player, int slot, GuiPolicy.Click click) {
         ItemStack stack = player.getInventory().getItem(slot);
         if (stack == null || stack.getType().isAir() || Icons.isGuiItem(stack)) {
             gui.windows().refresh(player);
             return;
         }
         ItemBlob blob = PaperItemCodec.encode(stack);
-        Selection.Result result = wantMode ? selection.toggleWanted(slot, blob) : selection.toggleOffered(slot, blob);
+        // right click means "this is what I want back", and only where that makes sense
+        boolean asWanted = twoSided && (click == GuiPolicy.Click.RIGHT || click == GuiPolicy.Click.SHIFT_RIGHT);
+        Selection.Result result = asWanted ? selection.toggleWanted(slot, blob) : selection.toggleOffered(slot, blob);
         switch (result) {
             case TOO_MANY -> player.sendMessage(Messages.bad("Больше " + MarketService.MAX_ITEMS_PER_LISTING + " стаков в один лот нельзя"));
             case ALREADY_OFFERED -> player.sendMessage(Messages.info("Этот предмет уже отмечен как отдаваемый"));

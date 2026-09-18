@@ -1,11 +1,13 @@
 package site.vinoff.market.gui;
 
+import java.util.ArrayList;
 import java.util.List;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import site.vinoff.market.bukkit.Messages;
 import site.vinoff.market.core.TradeState;
+import site.vinoff.market.core.model.StoredItem;
 import site.vinoff.market.core.model.Trade;
 import site.vinoff.market.core.model.TradeParty;
 
@@ -46,8 +48,8 @@ public final class TradesWindow extends MarketWindow {
         TradeParty me = owner ? TradeParty.OWNER : TradeParty.BUYER;
         boolean iConfirmed = trade.confirmations().contains(me);
         String next = switch (trade.state()) {
-            case PENDING -> owner ? "Левый клик — принять, правый — отклонить" : "Ждём ответа владельца";
-            case ACCEPTED -> iConfirmed ? "Вы подтвердили, ждём вторую сторону" : "Клик — подтвердить обмен";
+            case PENDING -> owner ? "ЛКМ — принять, ПКМ — отклонить" : "Ждём ответа владельца";
+            case ACCEPTED -> iConfirmed ? "Вы подтвердили, ждём вторую сторону" : "ЛКМ — подтвердить, ПКМ — отменить";
             case CONFIRMED -> "Завершается…";
             default -> trade.state().name();
         };
@@ -56,12 +58,40 @@ public final class TradesWindow extends MarketWindow {
             case ACCEPTED -> iConfirmed ? Material.CLOCK : Material.EMERALD;
             default -> Material.PAPER;
         };
+
+        // the point of this window: both halves of the deal, spelled out, before anything is pressed
+        List<String> fromListing = gui.market().listing(trade.listingId())
+                .map(listing -> listing.offered().stream()
+                        .map(item -> item.item().summary())
+                        .toList())
+                .orElse(List.of());
+        List<String> fromBuyer = gui.market().tradeItems(trade.id(), TradeParty.BUYER).stream()
+                .map(StoredItem::summary)
+                .toList();
+
+        List<String> lines = new ArrayList<>();
+        lines.add(owner ? "Вам предложили обмен" : "Вы предложили обмен");
+        lines.add(" ");
+        describe(lines, "Вы отдаёте:", owner ? fromListing : fromBuyer);
+        describe(lines, "Вы получаете:", owner ? fromBuyer : fromListing);
+        lines.add(" ");
+        lines.add("Состояние: " + state(trade.state()));
+        lines.add(next);
         return Icons.button(
                 material,
                 "Сделка #" + trade.id() + " по лоту #" + trade.listingId(),
-                owner ? "Вам предложили обмен" : "Вы предложили обмен",
-                "Состояние: " + state(trade.state()),
-                next);
+                lines.toArray(new String[0]));
+    }
+
+    private static void describe(List<String> lines, String title, List<String> items) {
+        lines.add(title);
+        if (items.isEmpty()) {
+            lines.add("  • ничего");
+            return;
+        }
+        for (String item : items) {
+            lines.add("  • " + item);
+        }
     }
 
     private void act(Player player, Trade trade, boolean owner, GuiPolicy.Click click) {

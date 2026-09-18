@@ -14,7 +14,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import site.vinoff.market.core.model.StoredItem;
 import site.vinoff.market.core.model.Trade;
+import site.vinoff.market.core.model.TradeParty;
 
 class TradeTest {
 
@@ -44,6 +46,24 @@ class TradeTest {
         ItemBlob gold = item("gold_ingot", 32);
         fixture.inventory.give(fixture.bob, gold);
         return market.offerTrade(fixture.bob, "Bob", listing, List.of(gold));
+    }
+
+    @Test
+    @DisplayName("both halves of a trade can be read back, so nobody answers an offer blind")
+    void bothSidesAreVisible() {
+        long trade = offerGold();
+
+        List<String> buyerPutUp = market.tradeItems(trade, TradeParty.BUYER).stream()
+                .map(StoredItem::summary)
+                .toList();
+        assertEquals(1, buyerPutUp.size());
+        assertTrue(buyerPutUp.get(0).contains("gold_ingot"), "the owner sees what is offered: " + buyerPutUp);
+
+        List<String> ownerPutUp = market.listing(listing).orElseThrow().offered().stream()
+                .map(item -> item.item().summary())
+                .toList();
+        assertEquals(1, ownerPutUp.size());
+        assertTrue(ownerPutUp.get(0).contains("diamond"), "the buyer sees what they would get: " + ownerPutUp);
     }
 
     @Test
