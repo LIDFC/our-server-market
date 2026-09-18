@@ -167,9 +167,12 @@ public final class MarketService {
         String txId = newTx();
         database.inTransaction(connection -> {
             ListingState from = listing.state();
+            if (from.terminal()) {
+                // already cancelled, taken or expired: nothing to do, and saying so twice is not an error
+                return null;
+            }
             if (from != ListingState.DRAFT && from != ListingState.ACTIVE) {
-                throw new MarketException(
-                        MarketError.LISTING_NOT_ACTIVE, from.terminal() ? "This listing is already finished" : "A trade is running on it");
+                throw new MarketException(MarketError.LISTING_NOT_ACTIVE, "A trade is running on this listing");
             }
             if (!market.transitionListing(connection, listingId, from, ListingState.CANCELLED, now)) {
                 // somebody else got there first; that is not an error for the player
@@ -328,6 +331,10 @@ public final class MarketService {
         TradeParty party = trade.partyOf(actor);
         if (party == null) {
             throw new MarketException(MarketError.NOT_PARTICIPANT, "This is not your trade");
+        }
+        if (trade.state() == TradeState.COMPLETED) {
+            // pressing confirm again after the trade went through is not an error, it is simply already done
+            return true;
         }
         if (trade.state() != TradeState.ACCEPTED && trade.state() != TradeState.CONFIRMED) {
             throw new MarketException(
@@ -602,16 +609,14 @@ public final class MarketService {
                 releaseTo(connection, item, item.ownerUuid(), DeliveryReason.RECOVERED, txId, now);
                 orphans++;
             }
-            int handovers = 0;
-            for (PendingDelivery delivery : deliveries.claimingFromOtherBoots(connection, database.bootId())) {
-                // the server stopped in the middle of handing this over; the login check decides, so queue it again
-                deliveries.revertClaiming(connection, delivery.id(), delivery.claimTx());
-                handovers++;
-            }
+            // Handovers interrupted by the crash are deliberately left alone. Whether the items reached the player can
+            // only be told by looking at their inventory, and that happens when they log in. Queueing them again here
+            // would hand out a second copy of everything that did arrive.
+            int handovers = deliveries.claimingFromOtherBoots(connection, database.bootId()).size();
             if (orphans > 0 || handovers > 0) {
                 market.event(
                         connection, now, "RECOVERY", null, null, null, txId,
-                        orphans + " escrow row(s) returned, " + handovers + " handover(s) queued again");
+                        orphans + " escrow row(s) returned, " + handovers + " handover(s) waiting for their player to log in");
             }
             return new RecoveryReport(orphans, handovers);
         });
@@ -729,10 +734,10 @@ public final class MarketService {
     }
 
     /** What startup recovery did, for the log and the admin command. */
-    public record RecoveryReport(int escrowReturned, int handoversRequeued) {
+    public record RecoveryReport(int escrowReturned, int handoversAwaitingLogin) {
 
         public boolean anything() {
-            return escrowReturned > 0 || handoversRequeued > 0;
+            return escrowReturned > 0 || handoversAwaitingLogin > 0;
         }
     }
 
