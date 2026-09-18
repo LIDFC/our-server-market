@@ -1,6 +1,11 @@
 # Установка на VPS
 
-Сервер: Ubuntu 24.04, Paper 1.21.11, Java 21, каталог `/home/ubuntu/minecraft`, запуск через `screen` (не systemd).
+Сервер: Ubuntu 24.04, Paper 1.21.11, Java 21, каталог `/home/ubuntu/minecraft`.
+
+Запуском управляет **systemd поверх screen**: юнит `minecraft.service` выполняет
+`/usr/bin/screen -dmS mc /bin/bash /home/ubuntu/minecraft/run.sh`. То есть консоль сервера живёт в screen-сессии `mc`,
+а стартом и остановкой занимается systemd. Это важно: `systemctl stop` убивает screen, не дав серверу сохраниться,
+поэтому останавливать надо в два шага — команда `stop` внутрь консоли, и только потом сервис.
 
 ## 1. Собрать jar
 
@@ -25,30 +30,22 @@ scp OurServerMarket-1.0.0.jar ubuntu@158.160.23.67:/home/ubuntu/
 
 ## 3. Остановить сервер Minecraft
 
-Посмотреть, что за сессия screen:
+Отправить `stop` прямо в консоль сервера, не подключаясь к ней:
 
 ```bash
-screen -ls
+screen -S mc -p 0 -X stuff "save-all$(printf '\r')stop$(printf '\r')"
 ```
 
-Подключиться и остановить сервер изнутри консоли:
+Дождаться, пока java действительно выйдет:
 
 ```bash
-screen -r minecraft
+until ! pgrep -f "server.jar" >/dev/null; do sleep 2; done; echo "сервер остановлен"
 ```
 
-В консоли сервера:
+**Не останавливайте через `systemctl stop` или `kill`**: сервер не успеет сохраниться, а плагин не отметит чистое
+выключение, и при следующем старте будет полная проверка рынка. Плагин это переживёт, но зачем.
 
-```
-save-all
-stop
-```
-
-Дождитесь, пока в консоли появится строка об остановке и screen вернёт вас в оболочку (или сессия закроется). **Не
-закрывайте сервер через `kill`**: незавершённая остановка означает, что плагин не успел отметить чистое выключение, и
-при следующем старте он проведёт полную проверку.
-
-Отключиться от screen, не останавливая сервер: `Ctrl+A`, затем `D`.
+Подключиться к консоли руками: `screen -r mc`; выйти, не останавливая сервер: `Ctrl+A`, затем `D`.
 
 ## 4. Положить плагин
 
@@ -59,12 +56,14 @@ ls -l /home/ubuntu/minecraft/plugins/ | grep -i market
 
 ## 5. Запустить сервер
 
-Так, как он запускается у вас (обычно скрипт `start.sh`):
+```bash
+systemctl start minecraft.service
+```
+
+Посмотреть, что стартовало:
 
 ```bash
-cd /home/ubuntu/minecraft
-screen -S minecraft -dm ./start.sh
-screen -r minecraft
+tail -f /home/ubuntu/minecraft/logs/latest.log
 ```
 
 ## 6. Проверить, что плагин поднялся
@@ -97,14 +96,20 @@ ls -l /home/ubuntu/minecraft/plugins/OurServerMarket/
 
 ## 8. Токен API
 
+Нужен только для будущего раздела рынка на сайте. Без него плагин работает в игре как обычно и пишет в лог одну
+строку о том, что API выключен.
+
 ```bash
 openssl rand -hex 32
 ```
 
-Лучший способ — переменная окружения: добавьте в начало `start.sh`, **до** строки с `java`:
+Раз запуском управляет systemd, секрет удобнее держать в drop-in юнита: он дойдёт и до screen, и до java, и его нет в
+файлах сервера.
 
 ```bash
-export OUR_SERVER_MARKET_TOKEN=вставьте-токен
+mkdir -p /etc/systemd/system/minecraft.service.d
+printf '[Service]\nEnvironment=OUR_SERVER_MARKET_TOKEN=вставьте-токен\n' > /etc/systemd/system/minecraft.service.d/market.conf
+systemctl daemon-reload
 ```
 
 Либо, если так проще, в `plugins/OurServerMarket/config.yml`:
@@ -151,9 +156,8 @@ ss -tlnp | grep 8788
 Самый честный тест: во время сделки **жёстко** прервать сервер (`kill -9` процесса java), затем запустить снова.
 
 ```bash
-pgrep -af java
-kill -9 <pid>
-cd /home/ubuntu/minecraft && screen -S minecraft -dm ./start.sh
+pkill -9 -f server.jar
+systemctl start minecraft.service
 ```
 
 В логе после старта:
@@ -176,10 +180,10 @@ deliveries` и количество предметов — их должно б�
 ## Откат
 
 ```bash
-cd /home/ubuntu/minecraft
-screen -r minecraft     # внутри: save-all, stop
-cp /home/ubuntu/backups/OurServerMarket-предыдущая.jar plugins/OurServerMarket-1.0.0.jar
-screen -S minecraft -dm ./start.sh
+screen -S mc -p 0 -X stuff "save-all$(printf '\r')stop$(printf '\r')"
+until ! pgrep -f "server.jar" >/dev/null; do sleep 2; done
+cp /home/ubuntu/backups/OurServerMarket-предыдущая.jar /home/ubuntu/minecraft/plugins/OurServerMarket-1.0.0.jar
+systemctl start minecraft.service
 ```
 
 Если новая версия успела применить миграцию схемы, старый jar её не поймёт — тогда нужна и база из резервной копии:
