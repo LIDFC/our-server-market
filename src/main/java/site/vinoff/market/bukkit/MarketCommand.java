@@ -246,6 +246,11 @@ public final class MarketCommand implements CommandExecutor, TabCompleter {
             player.sendMessage(Messages.info("Вас ничего не ждёт"));
             return;
         }
+        if (gui.windows().openWindow(player) != null) {
+            // the marketplace does not put items into an inventory the player is not looking at, so close first
+            gui.closeAndDeliver(player);
+            return;
+        }
         int handed = market.claimDeliveries(player.getUniqueId());
         int left = market.pendingCount(player.getUniqueId());
         if (handed > 0) {

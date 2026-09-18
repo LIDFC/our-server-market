@@ -82,8 +82,29 @@ public final class OurServerMarketPlugin extends JavaPlugin {
                     + report.handoversAwaitingLogin() + " handover(s) waiting for their player to log in.");
         }
 
+        scheduleExpiry(market, log);
         startApi(market, deliveries, log);
         log.info("OurServerMarket is ready.");
+    }
+
+    /** Closes forgotten listings and returns their items, if the server asked for that in config.yml. */
+    private void scheduleExpiry(MarketService market, Logger log) {
+        int days = getConfig().getInt("listings.expire-after-days", 0);
+        if (days <= 0) {
+            return;
+        }
+        long everyTenMinutes = 20L * 60L * 10L;
+        getServer().getScheduler().runTaskTimer(this, () -> {
+            try {
+                int expired = market.expireListingsOlderThan(java.time.Duration.ofDays(days));
+                if (expired > 0) {
+                    log.info("Closed " + expired + " forgotten listing(s); the items are waiting for their owners.");
+                }
+            } catch (RuntimeException failure) {
+                log.warning("The expiry sweep failed: " + failure.getMessage());
+            }
+        }, everyTenMinutes, everyTenMinutes);
+        log.info("Listings are closed after " + days + " day(s) without a buyer.");
     }
 
     private void startApi(MarketService market, DeliveryRepository deliveries, Logger log) {

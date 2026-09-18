@@ -30,6 +30,8 @@ public final class SelectionWindow extends MarketWindow {
     private final Long answeringListing;
     private final Selection selection = new Selection(MarketService.MAX_ITEMS_PER_LISTING);
     private boolean wantMode;
+    /** a second click on "publish" before the first one finished must not start a second listing */
+    private boolean submitting;
 
     private SelectionWindow(Gui gui, ListingType type, String recipient, Long answeringListing) {
         super(answeringListing == null ? "Что выкладываем" : "Что предлагаем", 6);
@@ -119,6 +121,18 @@ public final class SelectionWindow extends MarketWindow {
     }
 
     private void confirm(Player player) {
+        if (submitting) {
+            return;
+        }
+        submitting = true;
+        try {
+            submit(player);
+        } finally {
+            submitting = false;
+        }
+    }
+
+    private void submit(Player player) {
         List<ItemBlob> offered = selection.offered();
         List<ItemBlob> wanted = selection.wantedItems();
         if (answeringListing != null) {

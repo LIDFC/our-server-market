@@ -18,3 +18,5 @@ api:
 listings:
   # how many stacks one listing may hold
   max-items: 27
+  # 0 = никогда не закрывать; иначе через столько дней лот снимается, а вещи уходят владельцу
+  expire-after-days: 0

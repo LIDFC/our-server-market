@@ -1,6 +1,7 @@
 package site.vinoff.market.core;
 
 import java.sql.Connection;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -595,6 +596,41 @@ public final class MarketService {
 
     private int amountOf(Connection connection, String itemUid) {
         return market.item(connection, itemUid).map(StoredItem::amount).orElse(1);
+    }
+
+    // expiry -------------------------------------------------------------------------------------------------------
+
+    /**
+     * Closes listings nobody touched for a long time and gives their items back. Guarded like everything else, so a
+     * sweep that runs twice, or at the same moment as somebody's offer, returns each stack exactly once.
+     *
+     * @return how many listings were closed
+     */
+    public int expireListingsOlderThan(Duration age) {
+        Instant now = clock.now();
+        Instant cutoff = now.minus(age);
+        String txId = newTx();
+        return database.inTransaction(connection -> {
+            int expired = 0;
+            for (Listing listing : market.listings(connection, Set.of(ListingState.ACTIVE), null, null, 200, 0)) {
+                if (listing.createdAt().isAfter(cutoff)) {
+                    continue;
+                }
+                // the guard is what makes a second sweep, or a sweep racing an offer, harmless
+                if (!market.transitionListing(connection, listing.id(), ListingState.ACTIVE, ListingState.EXPIRED, now)) {
+                    continue;
+                }
+                returnEscrow(
+                        connection,
+                        market.escrowOf(connection, listing.id(), null, EscrowState.HELD),
+                        DeliveryReason.LISTING_EXPIRED,
+                        txId,
+                        now);
+                market.event(connection, now, "LISTING_EXPIRED", null, listing.id(), null, txId, null);
+                expired++;
+            }
+            return expired;
+        });
     }
 
     // administration -----------------------------------------------------------------------------------------------
