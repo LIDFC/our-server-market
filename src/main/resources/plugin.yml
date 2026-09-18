@@ -1,0 +1,31 @@
+name: OurServerMarket
+version: '${project.version}'
+main: site.vinoff.market.bukkit.OurServerMarketPlugin
+api-version: '1.21'
+description: Item marketplace with escrow, without in-game currency
+authors: [Our Server]
+website: https://mc.vin-off.site
+# Paper downloads the SQLite driver itself, so the jar stays small and nothing is shaded
+libraries:
+  - org.xerial:sqlite-jdbc:3.53.4.0
+# AuthMe is only used to know when a player is really logged in; the plugin works without it
+softdepend: [AuthMe]
+commands:
+  market:
+    description: The item marketplace
+    usage: /market help
+    aliases: [рынок]
+    permission: ourserver.market.use
+permissions:
+  ourserver.market.use:
+    description: Look at the marketplace
+    default: true
+  ourserver.market.create:
+    description: Put items up
+    default: true
+  ourserver.market.trade:
+    description: Take items and offer trades
+    default: true
+  ourserver.market.admin:
+    description: Look into other players' listings and cancel them
+    default: op

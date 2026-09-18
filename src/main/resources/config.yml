@@ -1,0 +1,20 @@
+# OurServerMarket. Everything here is safe to change and reload with a server restart.
+
+database:
+  # relative to plugins/OurServerMarket/
+  file: market.db
+
+api:
+  # the local API the website backend talks to; nothing else should ever reach it
+  enabled: true
+  # keep 127.0.0.1: the API has no business being on the internet
+  bind: "127.0.0.1"
+  port: 8788
+  # Better: leave this empty and set OUR_SERVER_MARKET_TOKEN in the server's environment.
+  # At least 24 characters. Without a token the API does not start at all.
+  token: ""
+  rate-limit-per-minute: 120
+
+listings:
+  # how many stacks one listing may hold
+  max-items: 27
