@@ -651,6 +651,43 @@ public final class MarketRepository {
                 Instant.parse(row.getString("created_at")));
     }
 
+    // administration -----------------------------------------------------------------------------------------------
+
+    /** Hands the open listings of one identity to another. Only open ones: history keeps the name it was made under. */
+    public int reassignListings(Connection connection, UUID from, UUID to, Instant now) {
+        try (PreparedStatement update = connection.prepareStatement(
+                "UPDATE listings SET owner_uuid = ?, updated_at = ? WHERE owner_uuid = ? AND state IN ('DRAFT','ACTIVE','PENDING_TRADE')")) {
+            update.setString(1, to.toString());
+            update.setString(2, now.toString());
+            update.setString(3, from.toString());
+            return update.executeUpdate();
+        } catch (SQLException failure) {
+            throw new StorageException("Could not hand the listings of " + from + " to " + to, failure);
+        }
+    }
+
+    public int reassignEscrow(Connection connection, UUID from, UUID to) {
+        try (PreparedStatement update =
+                connection.prepareStatement("UPDATE escrow_items SET owner_uuid = ? WHERE owner_uuid = ? AND state = 'HELD'")) {
+            update.setString(1, to.toString());
+            update.setString(2, from.toString());
+            return update.executeUpdate();
+        } catch (SQLException failure) {
+            throw new StorageException("Could not hand the escrow of " + from + " to " + to, failure);
+        }
+    }
+
+    public int reassignDeliveries(Connection connection, UUID from, UUID to) {
+        try (PreparedStatement update = connection.prepareStatement(
+                "UPDATE pending_deliveries SET player_uuid = ? WHERE player_uuid = ? AND state = 'PENDING'")) {
+            update.setString(1, to.toString());
+            update.setString(2, from.toString());
+            return update.executeUpdate();
+        } catch (SQLException failure) {
+            throw new StorageException("Could not hand the deliveries of " + from + " to " + to, failure);
+        }
+    }
+
     // helpers ------------------------------------------------------------------------------------------------------
 
     static long generatedId(PreparedStatement statement) throws SQLException {

@@ -597,6 +597,52 @@ public final class MarketService {
         return market.item(connection, itemUid).map(StoredItem::amount).orElse(1);
     }
 
+    // administration -----------------------------------------------------------------------------------------------
+
+    /**
+     * Moves everything one identity owns to another one. On an offline server a rename makes a new UUID, so this is
+     * how a player gets their own escrow back; it is one transaction and it writes down who did it.
+     *
+     * @return how many listings, escrow rows and deliveries were moved
+     */
+    public ReassignReport reassign(UUID from, UUID to, UUID admin) {
+        if (from.equals(to)) {
+            throw new MarketException(MarketError.INVALID_REQUEST, "Those are the same player");
+        }
+        Instant now = clock.now();
+        String txId = newTx();
+        return database.inTransaction(connection -> {
+            if (market.identity(connection, to).isEmpty()) {
+                throw new MarketException(MarketError.PLAYER_NOT_FOUND, "The new player has never been seen on this server");
+            }
+            int listings = market.reassignListings(connection, from, to, now);
+            int escrow = market.reassignEscrow(connection, from, to);
+            int pending = market.reassignDeliveries(connection, from, to);
+            market.event(
+                    connection, now, "ADMIN_REASSIGN", admin, null, null, txId,
+                    from + " → " + to + ": " + listings + " listing(s), " + escrow + " escrow row(s), " + pending + " delivery(ies)");
+            return new ReassignReport(listings, escrow, pending);
+        });
+    }
+
+    /** What an administrator sees about a player. */
+    public String inspect(UUID player) {
+        return database.read(connection -> {
+            int listings = market.listings(connection, EnumSet.of(ListingState.ACTIVE, ListingState.PENDING_TRADE, ListingState.DRAFT), null, player, 100, 0).size();
+            int escrow = market.escrowOf(connection, null, null, EscrowState.HELD).stream()
+                    .filter(item -> item.ownerUuid().equals(player))
+                    .mapToInt(item -> 1)
+                    .sum();
+            int waiting = deliveries.pendingCount(connection, player);
+            String name = market.identity(connection, player).map(Identity::nameExact).orElse("unknown");
+            return name + " (" + player + "): " + listings + " open listing(s), " + escrow + " stack(s) in escrow, " + waiting
+                    + " waiting delivery(ies)";
+        });
+    }
+
+    /** What a reassignment moved. */
+    public record ReassignReport(int listings, int escrowRows, int deliveries) {}
+
     // recovery -----------------------------------------------------------------------------------------------------
 
     /**

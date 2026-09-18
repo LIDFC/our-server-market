@@ -24,6 +24,7 @@ import site.vinoff.market.core.model.Identity;
 import site.vinoff.market.core.model.Listing;
 import site.vinoff.market.core.model.PendingDelivery;
 import site.vinoff.market.core.model.Trade;
+import site.vinoff.market.gui.Gui;
 
 /**
  * The /market command. Everything here runs on the server thread and hands straight over to the core, which is the only
@@ -39,9 +40,11 @@ public final class MarketCommand implements CommandExecutor, TabCompleter {
                     "trades", "deliveries", "help", "admin");
 
     private final MarketService market;
+    private final Gui gui;
 
-    public MarketCommand(MarketService market) {
+    public MarketCommand(MarketService market, Gui gui) {
         this.market = market;
+        this.gui = gui;
     }
 
     @Override
@@ -54,7 +57,7 @@ public final class MarketCommand implements CommandExecutor, TabCompleter {
             player.sendMessage(Messages.bad("У вас нет доступа к рынку"));
             return true;
         }
-        String sub = args.length == 0 ? "help" : args[0].toLowerCase(Locale.ROOT);
+        String sub = args.length == 0 ? "menu" : args[0].toLowerCase(Locale.ROOT);
         try {
             handle(player, sub, args);
         } catch (MarketException refused) {
@@ -69,7 +72,14 @@ public final class MarketCommand implements CommandExecutor, TabCompleter {
     private void handle(Player player, String sub, String[] args) {
         UUID uuid = player.getUniqueId();
         switch (sub) {
-            case "browse" -> browse(player, args.length > 1 ? parsePage(args[1]) : 1);
+            case "menu" -> gui.openMain(player);
+            case "browse" -> {
+                if (args.length > 1) {
+                    browse(player, parsePage(args[1]));
+                } else {
+                    gui.openBrowse(player, 1);
+                }
+            }
             case "create" -> create(player, args);
             case "add" -> addToDraft(player, false);
             case "want" -> addToDraft(player, true);
@@ -249,23 +259,41 @@ public final class MarketCommand implements CommandExecutor, TabCompleter {
     private void admin(Player player, String[] args) {
         requirePermission(player, "ourserver.market.admin");
         if (args.length < 3) {
-            player.sendMessage(Messages.bad("/market admin info|cancel <лот>"));
+            player.sendMessage(Messages.bad("/market admin info <лот> | cancel <лот> | inspect <ник> | reassign <старый ник> <новый ник>"));
             return;
         }
-        long id = parseId(args[2], "лота");
         switch (args[1].toLowerCase(Locale.ROOT)) {
             case "info" -> {
-                Listing listing = market.listing(id)
+                Listing listing = market.listing(parseId(args[2], "лота"))
                         .orElseThrow(() -> new MarketException(MarketError.LISTING_NOT_FOUND, "нет такого лота"));
                 player.sendMessage(Messages.info("#" + listing.id() + " " + listing.type() + " " + listing.state()
                         + " владелец " + listing.ownerUuid() + " — " + MarketService.describe(listing)));
             }
             case "cancel" -> {
+                long id = parseId(args[2], "лота");
                 market.cancel(player.getUniqueId(), id, true);
                 player.sendMessage(Messages.good("Лот #" + id + " снят, предметы ушли владельцу"));
             }
-            default -> player.sendMessage(Messages.bad("/market admin info|cancel <лот>"));
+            case "inspect" -> player.sendMessage(Messages.info(market.inspect(identityOf(args[2]))));
+            case "reassign" -> {
+                if (args.length < 4) {
+                    player.sendMessage(Messages.bad("/market admin reassign <старый ник> <новый ник>"));
+                    return;
+                }
+                UUID from = identityOf(args[2]);
+                UUID to = identityOf(args[3]);
+                MarketService.ReassignReport report = market.reassign(from, to, player.getUniqueId());
+                player.sendMessage(Messages.good("Перенесено: лотов " + report.listings() + ", эскроу "
+                        + report.escrowRows() + ", посылок " + report.deliveries()));
+                player.sendMessage(Messages.hint("запись об этом есть в журнале рынка"));
+            }
+            default -> player.sendMessage(Messages.bad("/market admin info|cancel|inspect|reassign"));
         }
+    }
+
+    /** A nickname the marketplace has seen, or the offline UUID it would have. */
+    private UUID identityOf(String name) {
+        return market.findPlayer(name).map(Identity::uuid).orElseGet(() -> BukkitInventoryPort.offlineUuid(name));
     }
 
     // helpers ------------------------------------------------------------------------------------------------------

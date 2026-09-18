@@ -12,6 +12,7 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.Plugin;
 import site.vinoff.market.core.MarketService;
+import site.vinoff.market.gui.WindowManager;
 
 /**
  * Follows players in and out.
@@ -26,12 +27,14 @@ public final class PlayerListener implements Listener {
     private final Plugin plugin;
     private final MarketService market;
     private final BukkitInventoryPort inventory;
+    private final WindowManager windows;
     private final Logger log;
 
-    public PlayerListener(Plugin plugin, MarketService market, BukkitInventoryPort inventory, Logger log) {
+    public PlayerListener(Plugin plugin, MarketService market, BukkitInventoryPort inventory, WindowManager windows, Logger log) {
         this.plugin = plugin;
         this.market = market;
         this.inventory = inventory;
+        this.windows = windows;
         this.log = log;
     }
 
@@ -84,6 +87,7 @@ public final class PlayerListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
         inventory.forget(event.getPlayer().getUniqueId());
+        windows.closed(event.getPlayer());
     }
 
     /** Finishes whatever an earlier run of the server left open for this player, then tells them what is waiting. */
@@ -95,6 +99,8 @@ public final class PlayerListener implements Listener {
             if (!player.isOnline()) {
                 return;
             }
+            // pictures from a marketplace window can only be here after a bug or a crash; they are worth nothing
+            windows.sweep(player);
             try {
                 market.recoverPlayer(uuid);
             } catch (RuntimeException failure) {

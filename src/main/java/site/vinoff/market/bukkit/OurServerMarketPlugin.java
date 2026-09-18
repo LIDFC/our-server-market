@@ -7,6 +7,10 @@ import java.util.logging.Logger;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
 import site.vinoff.market.core.MarketService;
+import site.vinoff.market.gui.Gui;
+import site.vinoff.market.gui.GuiListener;
+import site.vinoff.market.gui.Icons;
+import site.vinoff.market.gui.WindowManager;
 import site.vinoff.market.core.port.MarketClock;
 import site.vinoff.market.http.ApiServer;
 import site.vinoff.market.storage.Database;
@@ -26,6 +30,7 @@ public final class OurServerMarketPlugin extends JavaPlugin {
 
     private Database database;
     private ApiServer api;
+    private WindowManager windows;
 
     @Override
     public void onEnable() {
@@ -47,13 +52,18 @@ public final class OurServerMarketPlugin extends JavaPlugin {
         BukkitInventoryPort inventory = new BukkitInventoryPort(getServer(), log);
         MarketService market = new MarketService(database, repository, deliveries, inventory, MarketClock.system(), log);
 
-        PlayerListener listener = new PlayerListener(this, market, inventory, log);
+        Icons.init(this);
+        windows = new WindowManager(this, inventory, log);
+        Gui gui = new Gui(this, market, windows);
+
+        PlayerListener listener = new PlayerListener(this, market, inventory, windows, log);
         inventory.setAuthmePresent(listener.hookAuthme());
         getServer().getPluginManager().registerEvents(listener, this);
+        getServer().getPluginManager().registerEvents(new GuiListener(windows), this);
 
         PluginCommand command = getCommand("market");
         if (command != null) {
-            MarketCommand handler = new MarketCommand(market);
+            MarketCommand handler = new MarketCommand(market, gui);
             command.setExecutor(handler);
             command.setTabCompleter(handler);
         }
@@ -102,6 +112,11 @@ public final class OurServerMarketPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (windows != null) {
+            // a window left open after the guard is gone would be an unguarded window
+            windows.closeAll();
+            windows = null;
+        }
         if (api != null) {
             api.stop();
             api = null;
