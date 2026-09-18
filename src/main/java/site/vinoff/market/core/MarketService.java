@@ -228,6 +228,10 @@ public final class MarketService {
         if (listing.ownedBy(buyer)) {
             throw new MarketException(MarketError.OWN_LISTING, "This is your own listing");
         }
+        if (listing.state() == ListingState.PENDING_TRADE) {
+            // somebody else is already trading for it; the guarded update below says the same thing on a closer race
+            throw new MarketException(MarketError.LISTING_ALREADY_TAKEN, "Somebody is already trading for this");
+        }
         if (listing.state() != ListingState.ACTIVE) {
             throw new MarketException(MarketError.LISTING_NOT_ACTIVE, "This listing is not open");
         }
