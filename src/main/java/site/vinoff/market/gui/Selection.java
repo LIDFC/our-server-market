@@ -8,28 +8,33 @@ import java.util.Optional;
 import site.vinoff.market.core.ItemBlob;
 
 /**
- * What a player has ticked while building a listing.
+ * What a player has put together while building a listing.
  *
- * <p>Nothing here owns an item. A selection is a list of slot numbers in the player's own inventory plus a snapshot of
- * what was in them, so a player who drops or moves an item after ticking it simply gets a refusal at the end: the real
- * removal is one transaction that checks the items are still there.
+ * <p>The two halves are built in completely different ways, and that is the point.
+ *
+ * <p><b>What I give</b> is a list of slot numbers in the player's own inventory plus a snapshot of what was seen in
+ * them. Nothing here owns an item: a player who drops or moves something after ticking it simply gets a refusal at the
+ * end, because the real removal is one transaction that checks the items are still there.
+ *
+ * <p><b>What I want</b> is not tied to the inventory at all — you are asking for something you do not have. It is a
+ * plain list of item ids and amounts, chosen from the catalogue, and it never moves anything anywhere.
  */
 public final class Selection {
 
     private final int maxItems;
     /** slot in the player's inventory to what was seen there */
     private final Map<Integer, ItemBlob> chosen = new LinkedHashMap<>();
-    private final Map<Integer, ItemBlob> wanted = new LinkedHashMap<>();
+    /** item id (e.g. {@code diamond}) to how many of it the player is asking for */
+    private final Map<String, Integer> wanted = new LinkedHashMap<>();
 
     public Selection(int maxItems) {
         this.maxItems = maxItems;
     }
 
+    // what I give ---------------------------------------------------------------------------------------------------
+
     /** Ticks or unticks an offered stack. Returns what happened, so the window can say it out loud. */
     public Result toggleOffered(int slot, ItemBlob blob) {
-        if (wanted.containsKey(slot)) {
-            return Result.ALREADY_WANTED;
-        }
         if (chosen.remove(slot) != null) {
             return Result.REMOVED;
         }
@@ -40,47 +45,76 @@ public final class Selection {
         return Result.ADDED;
     }
 
-    /** Ticks or unticks a stack as "this is what I want in return". The item stays with the player either way. */
-    public Result toggleWanted(int slot, ItemBlob blob) {
-        if (chosen.containsKey(slot)) {
-            return Result.ALREADY_OFFERED;
-        }
-        if (wanted.remove(slot) != null) {
-            return Result.REMOVED;
-        }
-        if (wanted.size() >= maxItems) {
-            return Result.TOO_MANY;
-        }
-        wanted.put(slot, blob);
-        return Result.ADDED;
-    }
-
     public boolean isOffered(int slot) {
         return chosen.containsKey(slot);
-    }
-
-    public boolean isWanted(int slot) {
-        return wanted.containsKey(slot);
     }
 
     public List<ItemBlob> offered() {
         return new ArrayList<>(chosen.values());
     }
 
-    public List<ItemBlob> wantedItems() {
-        return new ArrayList<>(wanted.values());
-    }
-
-    public boolean empty() {
-        return chosen.isEmpty() && wanted.isEmpty();
-    }
-
     public int offeredCount() {
         return chosen.size();
     }
 
+    public Optional<ItemBlob> offeredAt(int slot) {
+        return Optional.ofNullable(chosen.get(slot));
+    }
+
+    /**
+     * Drops a tick whose slot no longer holds what was ticked. Called before showing the window again, so a player who
+     * moved something around sees the truth rather than a stale tick.
+     */
+    public void forget(int slot) {
+        chosen.remove(slot);
+    }
+
+    // what I want ---------------------------------------------------------------------------------------------------
+
+    /**
+     * Changes how many of an item the player is asking for. A resulting amount of zero or less drops the line
+     * entirely, and anything above {@code cap} is clamped, so a held-down mouse button cannot ask for a million
+     * diamonds.
+     */
+    public Result want(String itemId, int change, int cap) {
+        int current = wanted.getOrDefault(itemId, 0);
+        int next = current + change;
+        if (next <= 0) {
+            return wanted.remove(itemId) != null ? Result.REMOVED : Result.UNCHANGED;
+        }
+        if (current == 0 && wanted.size() >= maxItems) {
+            return Result.TOO_MANY;
+        }
+        next = Math.min(next, cap);
+        if (next == current) {
+            return Result.UNCHANGED;
+        }
+        wanted.put(itemId, next);
+        return current == 0 ? Result.ADDED : Result.CHANGED;
+    }
+
+    /** Drops an item from the wish list whatever its amount. */
+    public Result forgetWanted(String itemId) {
+        return wanted.remove(itemId) != null ? Result.REMOVED : Result.UNCHANGED;
+    }
+
+    public int wantedAmount(String itemId) {
+        return wanted.getOrDefault(itemId, 0);
+    }
+
+    /** The wish list, in the order it was built: item id to amount. */
+    public Map<String, Integer> wanted() {
+        return new LinkedHashMap<>(wanted);
+    }
+
     public int wantedCount() {
         return wanted.size();
+    }
+
+    // both ----------------------------------------------------------------------------------------------------------
+
+    public boolean empty() {
+        return chosen.isEmpty() && wanted.isEmpty();
     }
 
     public void clear() {
@@ -88,25 +122,12 @@ public final class Selection {
         wanted.clear();
     }
 
-    /**
-     * Drops ticks whose slot no longer holds what was ticked. Called before showing the window again, so a player who
-     * moved something around sees the truth rather than a stale tick.
-     */
-    public void forget(int slot) {
-        chosen.remove(slot);
-        wanted.remove(slot);
-    }
-
-    public Optional<ItemBlob> offeredAt(int slot) {
-        return Optional.ofNullable(chosen.get(slot));
-    }
-
-    /** What a tick did. */
+    /** What a change did. */
     public enum Result {
         ADDED,
+        CHANGED,
         REMOVED,
-        TOO_MANY,
-        ALREADY_OFFERED,
-        ALREADY_WANTED
+        UNCHANGED,
+        TOO_MANY
     }
 }

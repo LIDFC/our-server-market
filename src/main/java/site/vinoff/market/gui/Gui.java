@@ -4,6 +4,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 import site.vinoff.market.core.MarketException;
 import site.vinoff.market.core.MarketService;
+import site.vinoff.market.bukkit.ChatPrompt;
 import site.vinoff.market.bukkit.Messages;
 
 /**
@@ -15,11 +16,17 @@ public final class Gui {
     private final Plugin plugin;
     private final MarketService market;
     private final WindowManager windows;
+    private final ChatPrompt prompts;
 
-    public Gui(Plugin plugin, MarketService market, WindowManager windows) {
+    public Gui(Plugin plugin, MarketService market, WindowManager windows, ChatPrompt prompts) {
         this.plugin = plugin;
         this.market = market;
         this.windows = windows;
+        this.prompts = prompts;
+    }
+
+    public ChatPrompt prompts() {
+        return prompts;
     }
 
     public MarketService market() {
@@ -60,6 +67,23 @@ public final class Gui {
 
     public void openOffer(Player player, long listingId) {
         windows.open(player, SelectionWindow.forOffering(this, listingId));
+    }
+
+    /**
+     * Opens the item catalogue for the wish list of a listing being built. The same {@link SelectionWindow} instance is
+     * carried along, so what the player had already ticked is still there when they come back.
+     */
+    public void openCatalogue(Player player, SelectionWindow origin, String query, int page) {
+        windows.open(player, new CatalogWindow(this, origin, query, page));
+    }
+
+    /** Closes whatever marketplace window is open, on the next tick. Needed before a player can type in chat. */
+    public void closeWindow(Player player) {
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            if (player.isOnline()) {
+                player.closeInventory();
+            }
+        });
     }
 
     /**

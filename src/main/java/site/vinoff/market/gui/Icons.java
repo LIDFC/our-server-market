@@ -49,11 +49,60 @@ public final class Icons {
         return decorate(copy, title, lines);
     }
 
+    /**
+     * A catalogue entry. The name is left to the client, so a Russian player reads «Алмазная кирка» and an English one
+     * reads "Diamond Pickaxe" without the server knowing either word.
+     */
+    public static ItemStack catalogue(Material material, int amount, String... lines) {
+        int capped = Math.max(1, Math.min(amount, material.getMaxStackSize()));
+        ItemStack stack = new ItemStack(material, capped);
+        Component name = Component.translatable(material.translationKey())
+                .color(NamedTextColor.WHITE)
+                .decoration(TextDecoration.ITALIC, false);
+        return decorate(stack, name, lines);
+    }
+
+    /** A button whose lore is built out of components, so item names in it are translated by the client. */
+    public static ItemStack rich(Material material, String title, List<Component> lines) {
+        ItemStack stack = new ItemStack(material);
+        ItemMeta meta = stack.getItemMeta();
+        if (meta != null) {
+            meta.displayName(Component.text(title, NamedTextColor.WHITE).decoration(TextDecoration.ITALIC, false));
+            if (!lines.isEmpty()) {
+                meta.lore(lines);
+            }
+            if (marker != null) {
+                meta.getPersistentDataContainer().set(marker, PersistentDataType.BYTE, (byte) 1);
+            }
+            stack.setItemMeta(meta);
+        }
+        return stack;
+    }
+
+    /** One grey line of lore. */
+    public static Component line(String text) {
+        return Component.text(text, NamedTextColor.GRAY).decoration(TextDecoration.ITALIC, false);
+    }
+
+    /** One grey line of lore naming an item, which the client renders in the player's own language. */
+    public static Component line(String prefix, Material material) {
+        return Component.text(prefix, NamedTextColor.GRAY)
+                .append(Component.translatable(material.translationKey()))
+                .decoration(TextDecoration.ITALIC, false);
+    }
+
     private static ItemStack decorate(ItemStack stack, String title, String... lines) {
+        Component name = title == null
+                ? null
+                : Component.text(title, NamedTextColor.WHITE).decoration(TextDecoration.ITALIC, false);
+        return decorate(stack, name, lines);
+    }
+
+    private static ItemStack decorate(ItemStack stack, Component title, String... lines) {
         ItemMeta meta = stack.getItemMeta();
         if (meta != null) {
             if (title != null) {
-                meta.displayName(Component.text(title, NamedTextColor.WHITE).decoration(TextDecoration.ITALIC, false));
+                meta.displayName(title);
             }
             List<Component> lore = new ArrayList<>();
             for (String line : lines) {

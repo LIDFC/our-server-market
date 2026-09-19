@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import site.vinoff.market.core.ItemBlob;
@@ -27,17 +28,7 @@ class SelectionTest {
     }
 
     @Test
-    @DisplayName("a stack cannot be both offered and wanted")
-    void oneRolePerSlot() {
-        Selection selection = new Selection(3);
-        selection.toggleOffered(4, item("diamond", 16));
-        assertEquals(Selection.Result.ALREADY_OFFERED, selection.toggleWanted(4, item("diamond", 16)));
-        assertEquals(1, selection.offeredCount());
-        assertEquals(0, selection.wantedCount());
-    }
-
-    @Test
-    @DisplayName("the limit holds for both sides")
+    @DisplayName("the limit holds for what is given and for what is asked for")
     void limit() {
         Selection selection = new Selection(2);
         assertEquals(Selection.Result.ADDED, selection.toggleOffered(1, item("a", 1)));
@@ -45,9 +36,11 @@ class SelectionTest {
         assertEquals(Selection.Result.TOO_MANY, selection.toggleOffered(3, item("c", 1)));
         assertEquals(2, selection.offeredCount());
 
-        assertEquals(Selection.Result.ADDED, selection.toggleWanted(10, item("d", 1)));
-        assertEquals(Selection.Result.ADDED, selection.toggleWanted(11, item("e", 1)));
-        assertEquals(Selection.Result.TOO_MANY, selection.toggleWanted(12, item("f", 1)));
+        assertEquals(Selection.Result.ADDED, selection.want("diamond", 1, 64));
+        assertEquals(Selection.Result.ADDED, selection.want("emerald", 1, 64));
+        assertEquals(Selection.Result.TOO_MANY, selection.want("gold_ingot", 1, 64));
+        assertEquals(2, selection.wantedCount());
+        assertEquals(Selection.Result.CHANGED, selection.want("diamond", 5, 64), "a third item is refused, not a sixth diamond");
     }
 
     @Test
@@ -55,12 +48,9 @@ class SelectionTest {
     void forgetting() {
         Selection selection = new Selection(5);
         selection.toggleOffered(7, item("diamond", 16));
-        selection.toggleWanted(8, item("gold", 32));
         selection.forget(7);
-        selection.forget(8);
         assertTrue(selection.empty());
         assertEquals(0, selection.offered().size());
-        assertEquals(0, selection.wantedItems().size());
     }
 
     @Test
@@ -69,15 +59,60 @@ class SelectionTest {
         Selection selection = new Selection(5);
         selection.toggleOffered(1, item("diamond", 16));
         selection.toggleOffered(5, item("iron", 64));
-        selection.toggleWanted(9, item("gold", 32));
 
-        assertEquals(2, selection.offered().size());
-        assertEquals("16x diamond", selection.offered().get(0).summary());
-        assertEquals("64x iron", selection.offered().get(1).summary());
-        assertEquals(1, selection.wantedItems().size());
-        assertEquals("32x gold", selection.wantedItems().get(0).summary());
+        assertEquals(List.of("16x diamond", "64x iron"), selection.offered().stream().map(ItemBlob::summary).toList());
 
         selection.clear();
         assertTrue(selection.empty());
+    }
+
+    @Test
+    @DisplayName("an amount goes up, comes down, and disappears when it reaches nothing")
+    void amounts() {
+        Selection selection = new Selection(5);
+        assertEquals(Selection.Result.ADDED, selection.want("diamond", 1, 64));
+        assertEquals(1, selection.wantedAmount("diamond"));
+        assertEquals(Selection.Result.CHANGED, selection.want("diamond", 16, 64));
+        assertEquals(17, selection.wantedAmount("diamond"));
+        assertEquals(Selection.Result.CHANGED, selection.want("diamond", -1, 64));
+        assertEquals(16, selection.wantedAmount("diamond"));
+        assertEquals(Selection.Result.REMOVED, selection.want("diamond", -100, 64));
+        assertEquals(0, selection.wantedAmount("diamond"));
+        assertTrue(selection.empty());
+    }
+
+    @Test
+    @DisplayName("a held down mouse button cannot ask for a million diamonds")
+    void cap() {
+        Selection selection = new Selection(5);
+        for (int click = 0; click < 100; click++) {
+            selection.want("diamond", 16, 64);
+        }
+        assertEquals(64, selection.wantedAmount("diamond"));
+        assertEquals(Selection.Result.UNCHANGED, selection.want("diamond", 16, 64), "already at the cap");
+    }
+
+    @Test
+    @DisplayName("the wish list keeps the order it was built in")
+    void wishListOrder() {
+        Selection selection = new Selection(5);
+        selection.want("emerald", 5, 64);
+        selection.want("diamond", 2, 64);
+        assertEquals(List.of("emerald", "diamond"), List.copyOf(selection.wanted().keySet()));
+
+        assertEquals(Selection.Result.REMOVED, selection.forgetWanted("emerald"));
+        assertEquals(Selection.Result.UNCHANGED, selection.forgetWanted("emerald"));
+        assertEquals(List.of("diamond"), List.copyOf(selection.wanted().keySet()));
+    }
+
+    @Test
+    @DisplayName("what a player gives and what they ask for are independent")
+    void bothHalvesAreSeparate() {
+        Selection selection = new Selection(5);
+        selection.toggleOffered(4, item("diamond", 16));
+        selection.want("diamond", 32, 64);
+        assertEquals(1, selection.offeredCount());
+        assertEquals(1, selection.wantedCount());
+        assertEquals(32, selection.wantedAmount("diamond"), "asking for diamonds does not stop you giving diamonds");
     }
 }

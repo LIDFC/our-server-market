@@ -31,6 +31,7 @@ public final class OurServerMarketPlugin extends JavaPlugin {
     private Database database;
     private ApiServer api;
     private WindowManager windows;
+    private ChatPrompt prompts;
 
     @Override
     public void onEnable() {
@@ -54,12 +55,14 @@ public final class OurServerMarketPlugin extends JavaPlugin {
 
         Icons.init(this);
         windows = new WindowManager(this, inventory, log);
-        Gui gui = new Gui(this, market, windows);
+        prompts = new ChatPrompt(this);
+        Gui gui = new Gui(this, market, windows, prompts);
 
         PlayerListener listener = new PlayerListener(this, market, inventory, windows, log);
         inventory.setAuthmePresent(listener.hookAuthme());
         getServer().getPluginManager().registerEvents(listener, this);
         getServer().getPluginManager().registerEvents(new GuiListener(windows), this);
+        getServer().getPluginManager().registerEvents(prompts, this);
 
         PluginCommand command = getCommand("market");
         if (command != null) {
@@ -137,6 +140,11 @@ public final class OurServerMarketPlugin extends JavaPlugin {
             // a window left open after the guard is gone would be an unguarded window
             windows.closeAll();
             windows = null;
+        }
+        if (prompts != null) {
+            // an unanswered question would otherwise swallow the next thing that player says
+            prompts.clear();
+            prompts = null;
         }
         if (api != null) {
             api.stop();

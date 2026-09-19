@@ -4,7 +4,7 @@ import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import site.vinoff.market.core.ListingType;
 
-/** The first screen: everything a player can do, in five buttons. */
+/** The first screen: everything a player can do, one button each. */
 public final class MainMenuWindow extends MarketWindow {
 
     private final Gui gui;
@@ -31,6 +31,14 @@ public final class MainMenuWindow extends MarketWindow {
                 (clicker, click) -> gui.openCreate(clicker, ListingType.TRADE, null));
         set(
                 14,
+                Icons.button(
+                        Material.HOPPER,
+                        "Ищу вещь",
+                        "Выберите в каталоге, что вам нужно,",
+                        "и отметьте, что отдадите за это"),
+                (clicker, click) -> gui.openCreate(clicker, ListingType.WANTED, null));
+        set(
+                15,
                 Icons.button(Material.PAPER, "Мои лоты", "Снять лот и забрать вещи"),
                 (clicker, click) -> gui.openMine(clicker));
         set(
