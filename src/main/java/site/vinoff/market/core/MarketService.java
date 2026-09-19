@@ -682,17 +682,17 @@ public final class MarketService {
     private void settleOpenIntent(BoundChest chest, ChestIntent intent, ChestContents look) {
         Instant now = clock.now();
         String digest = look.snapshot().digest();
-        Intent record = database.read(connection -> deliveries.intent(connection, intent.txId())).orElse(null);
-        if (record == null) {
+        Intent open = database.read(connection -> deliveries.intent(connection, intent.txId())).orElse(null);
+        if (open == null) {
             return;
         }
-        if (record.dataVersion() != containers.dataVersion()) {
+        if (open.dataVersion() != containers.dataVersion()) {
             manual(chest, intent, "the server data version changed, the chest is not touched");
             return;
         }
-        if (record.state() != IntentState.INTENT) {
+        if (open.state() != IntentState.INTENT) {
             // the take transaction is a single commit, so nothing else should ever be seen here
-            manual(chest, intent, "an unexpected intent state: " + record.state());
+            manual(chest, intent, "an unexpected intent state: " + open.state());
             return;
         }
 
@@ -710,7 +710,7 @@ public final class MarketService {
             // the items left the chest but the listing was never written: they exist only in the items table
             database.inTransaction(connection -> {
                 int returned = 0;
-                for (String itemUid : record.detail().split(",")) {
+                for (String itemUid : open.detail().split(",")) {
                     if (itemUid.isBlank() || hasMovement(connection, itemUid)) {
                         continue;
                     }

@@ -64,8 +64,10 @@ class ChestTakeTest {
         assertTrue(fixture.containers.contentsOf(chestId).get(0) == null, "the slot is empty now");
         assertEquals(10, fixture.containers.totalItems(), "only the gold is left in the chest");
         assertEquals(1, fixture.escrowCount());
-        assertTrue(
-                fixture.holders().stream().anyMatch(line -> line.contains("CHEST:" + chestId)),
+        // holders() reports where an item ended up; what matters here is where it came FROM
+        assertEquals(
+                1,
+                fixture.count("SELECT COUNT(*) FROM item_movements WHERE from_holder = 'CHEST:" + chestId + "'"),
                 "the ledger records that the item came out of the world, not out of a player file");
     }
 
