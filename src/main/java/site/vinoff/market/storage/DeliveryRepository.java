@@ -17,6 +17,7 @@ import java.util.Optional;
 import java.util.UUID;
 import site.vinoff.market.core.DeliveryReason;
 import site.vinoff.market.core.DeliveryState;
+import site.vinoff.market.core.IntentSource;
 import site.vinoff.market.core.IntentState;
 import site.vinoff.market.core.ItemBlob;
 import site.vinoff.market.core.model.Intent;
@@ -189,10 +190,16 @@ public final class DeliveryRepository {
 
     // intents ------------------------------------------------------------------------------------------------------
 
+    /**
+     * Records an intent. {@code source} says what the fingerprint in {@code preDigest} is of — a player's inventory or
+     * a bound chest — and there is deliberately no overload that defaults it: the two are resolved by comparing
+     * against completely different things, and picking the wrong one hands out items that are still in the chest.
+     */
     public void insertIntent(
             Connection connection,
             String txId,
             String bootId,
+            IntentSource source,
             String op,
             UUID player,
             Long listingId,
@@ -202,18 +209,19 @@ public final class DeliveryRepository {
             String detail,
             Instant now) {
         try (PreparedStatement insert = connection.prepareStatement(
-                "INSERT INTO intents (tx_id, boot_id, op, player_uuid, listing_id, trade_id, state, pre_digest, data_version, detail,"
-                        + " created_at) VALUES (?, ?, ?, ?, ?, ?, 'INTENT', ?, ?, ?, ?)")) {
+                "INSERT INTO intents (tx_id, boot_id, source, op, player_uuid, listing_id, trade_id, state, pre_digest, data_version,"
+                        + " detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'INTENT', ?, ?, ?, ?)")) {
             insert.setString(1, txId);
             insert.setString(2, bootId);
-            insert.setString(3, op);
-            insert.setString(4, player.toString());
-            setNullableLong(insert, 5, listingId);
-            setNullableLong(insert, 6, tradeId);
-            insert.setString(7, preDigest);
-            insert.setInt(8, dataVersion);
-            setNullableString(insert, 9, detail);
-            insert.setString(10, now.toString());
+            insert.setString(3, source.name());
+            insert.setString(4, op);
+            insert.setString(5, player.toString());
+            setNullableLong(insert, 6, listingId);
+            setNullableLong(insert, 7, tradeId);
+            insert.setString(8, preDigest);
+            insert.setInt(9, dataVersion);
+            setNullableString(insert, 10, detail);
+            insert.setString(11, now.toString());
             insert.executeUpdate();
         } catch (SQLException failure) {
             throw new StorageException("Could not write an intent record", failure);
@@ -234,11 +242,21 @@ public final class DeliveryRepository {
     }
 
     /** Intents left open by an earlier run: these are the ones whose inventory digest has to be checked at login. */
+    /**
+     * Intents left over from an earlier boot, for login recovery.
+     *
+     * <p>Only {@code source = 'PLAYER'}, and that filter is load bearing. A chest intent stores the fingerprint of a
+     * chest; the caller compares what it gets back against the player's <em>inventory</em>, which would never match,
+     * so every chest intent would look like "the removal went through" and its items would be handed to the owner
+     * while they are still sitting in the chest. That is a duplication, triggered by nothing more exotic than logging
+     * in after a crash.
+     */
     public List<Intent> unresolvedIntents(Connection connection, UUID player, String currentBootId) {
         List<Intent> intents = new ArrayList<>();
         StringBuilder sql = new StringBuilder(
                 "SELECT tx_id, boot_id, op, player_uuid, listing_id, trade_id, state, pre_digest, data_version, detail, created_at,"
-                        + " resolved_at FROM intents WHERE state IN ('INTENT','APPLIED') AND boot_id <> ?");
+                        + " resolved_at FROM intents WHERE source = 'PLAYER' AND state IN ('INTENT','APPLIED')"
+                        + " AND boot_id <> ?");
         if (player != null) {
             sql.append(" AND player_uuid = ?");
         }

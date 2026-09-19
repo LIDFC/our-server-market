@@ -501,8 +501,8 @@ public final class MarketService {
                 uids.add(market.insertItem(connection, blob, inventory.dataVersion(), started));
             }
             deliveries.insertIntent(
-                    connection, txId, database.bootId(), op, player, listingId, tradeId, digest, inventory.dataVersion(),
-                    String.join(",", uids), started);
+                    connection, txId, database.bootId(), IntentSource.PLAYER, op, player, listingId, tradeId, digest,
+                    inventory.dataVersion(), String.join(",", uids), started);
             return uids;
         });
 
@@ -545,8 +545,8 @@ public final class MarketService {
                 return false;
             }
             deliveries.insertIntent(
-                    connection, txId, database.bootId(), "CLAIM", player, null, null, digest, inventory.dataVersion(),
-                    String.valueOf(delivery.id()), started);
+                    connection, txId, database.bootId(), IntentSource.PLAYER, "CLAIM", player, null, null, digest,
+                    inventory.dataVersion(), String.valueOf(delivery.id()), started);
             return true;
         });
         if (!claiming) {

@@ -14,6 +14,10 @@ import java.util.List;
  *   <li>{@code item_movements} is an append only ledger, enforced by triggers. Every other table is an index over it,
  *       which makes "every item has exactly one holder" a claim the code can check instead of hope for.
  * </ul>
+ *
+ * <p>Step 2 adds bound chests. {@code intents.source} exists because chest intents live in the same table as player
+ * ones and must never be resolved by comparing a chest's fingerprint against a player's inventory — see
+ * {@code DeliveryRepository.unresolvedIntents}, which filters on it.
  */
 public final class Migrations {
 
@@ -180,6 +184,47 @@ public final class Migrations {
               value TEXT NOT NULL,
               updated_at TEXT NOT NULL
             );
+            """,
+            """
+            ALTER TABLE intents ADD COLUMN source TEXT NOT NULL DEFAULT 'PLAYER';
+
+            CREATE TABLE bound_chests (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              owner_uuid TEXT NOT NULL REFERENCES identities(uuid),
+              world_uuid TEXT NOT NULL,
+              x INTEGER NOT NULL,
+              y INTEGER NOT NULL,
+              z INTEGER NOT NULL,
+              kind TEXT NOT NULL,
+              pair_x INTEGER,
+              pair_y INTEGER,
+              pair_z INTEGER,
+              size INTEGER NOT NULL,
+              state TEXT NOT NULL,
+              next_seq INTEGER NOT NULL DEFAULT 1,
+              applied_seq INTEGER NOT NULL DEFAULT 0,
+              verified_boot_id TEXT,
+              bound_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              released_at TEXT,
+              released_reason TEXT
+            );
+            CREATE UNIQUE INDEX bound_chests_owner ON bound_chests(owner_uuid) WHERE state = 'BOUND';
+            CREATE UNIQUE INDEX bound_chests_block ON bound_chests(world_uuid, x, y, z) WHERE state = 'BOUND';
+            CREATE INDEX bound_chests_pair ON bound_chests(world_uuid, pair_x, pair_y, pair_z) WHERE state = 'BOUND';
+            CREATE INDEX bound_chests_settling ON bound_chests(state, verified_boot_id);
+
+            CREATE TABLE chest_intents (
+              tx_id TEXT PRIMARY KEY REFERENCES intents(tx_id),
+              chest_id INTEGER NOT NULL REFERENCES bound_chests(id),
+              seq INTEGER NOT NULL,
+              pre_digest TEXT NOT NULL,
+              post_digest TEXT NOT NULL,
+              plan TEXT NOT NULL,
+              listing_id INTEGER REFERENCES listings(id),
+              created_at TEXT NOT NULL
+            );
+            CREATE INDEX chest_intents_chest ON chest_intents(chest_id, seq);
             """);
 
     public static int latestVersion() {
