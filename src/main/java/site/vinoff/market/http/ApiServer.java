@@ -26,7 +26,9 @@ import site.vinoff.market.core.model.Listing;
 import site.vinoff.market.core.model.ListingItem;
 import site.vinoff.market.core.model.MarketEventRecord;
 import site.vinoff.market.core.model.PendingDelivery;
+import site.vinoff.market.core.model.StoredItem;
 import site.vinoff.market.core.model.Trade;
+import site.vinoff.market.core.model.TradeParty;
 import site.vinoff.market.storage.Database;
 import site.vinoff.market.storage.DeliveryRepository;
 
@@ -152,6 +154,17 @@ public final class ApiServer {
             long id = pathId(path, "/listings/");
             Listing listing = market.listing(id).orElseThrow(() -> new MarketException(MarketError.LISTING_NOT_FOUND, "No such listing"));
             send(exchange, 200, listingJson(listing).done());
+            return;
+        }
+        if (path.startsWith("/trades/")) {
+            // both halves of one trade: without this the website can show the listing but not what was offered for it
+            long id = pathId(path, "/trades/");
+            Trade trade = market.trade(id).orElseThrow(() -> new MarketException(MarketError.TRADE_NOT_FOUND, "No such trade"));
+            Json ownerItems = Json.array();
+            market.listing(trade.listingId()).ifPresent(listing -> listing.offered().forEach(item -> ownerItems.add(itemJson(item))));
+            Json buyerItems = Json.array();
+            market.tradeItems(id, TradeParty.BUYER).forEach(item -> buyerItems.add(storedJson(item)));
+            send(exchange, 200, tradeJson(trade).field("ownerItems", ownerItems).field("buyerItems", buyerItems).done());
             return;
         }
         if (path.startsWith("/players/")) {
@@ -289,10 +302,14 @@ public final class ApiServer {
     }
 
     private Json itemJson(ListingItem item) {
+        return storedJson(item.item());
+    }
+
+    private Json storedJson(StoredItem item) {
         return Json.object()
-                .field("summary", item.item().summary())
-                .field("amount", item.item().amount())
-                .field("sha256", item.item().sha256());
+                .field("summary", item.summary())
+                .field("amount", item.amount())
+                .field("sha256", item.sha256());
     }
 
     private Json tradeJson(Trade trade) {

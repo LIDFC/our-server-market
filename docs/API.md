@@ -65,6 +65,17 @@ Authorization: Bearer <OUR_SERVER_MARKET_TOKEN>
 ### `GET /listings/{id}`
 Тот же объект без обёртки. `404 LISTING_NOT_FOUND`, если лота нет.
 
+### `GET /trades/{id}`
+Одна сделка целиком, с обеими сторонами: `ownerItems` — что выложил автор лота, `buyerItems` — что предложил
+покупатель. Без этого сайт видит только лот, но не предложение. `404 TRADE_NOT_FOUND`, если сделки нет.
+
+```json
+{ "id": 4, "listingId": 12, "ownerUuid": "…", "buyerUuid": "…", "state": "PENDING", "confirmations": [],
+  "createdAt": "…",
+  "ownerItems": [ { "summary": "16x diamond", "amount": 16, "sha256": "…" } ],
+  "buyerItems":  [ { "summary": "32x gold ingot", "amount": 32, "sha256": "…" } ] }
+```
+
 ### `GET /players/{uuid}/listings` · `/trades` · `/deliveries`
 Лоты, сделки и ожидающие посылки конкретного игрока. `uuid` — Minecraft UUID.
 
