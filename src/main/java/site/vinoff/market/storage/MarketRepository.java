@@ -1,7 +1,5 @@
 package site.vinoff.market.storage;
 
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -11,11 +9,11 @@ import java.sql.Types;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumSet;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import site.vinoff.market.core.Digest;
 import site.vinoff.market.core.EscrowState;
 import site.vinoff.market.core.ItemBlob;
 import site.vinoff.market.core.ListingState;
@@ -154,12 +152,9 @@ public final class MarketRepository {
         return new StoredItem(row.getString("item_uid"), blob, row.getInt("data_version"), row.getString("sha256"));
     }
 
+    /** Delegates, so an item's hash and a chest slot's fingerprint can never be computed differently. */
     public static String sha256(byte[] data) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data));
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException("SHA-256 is missing", impossible);
-        }
+        return Digest.sha256(data);
     }
 
     // ledger and events --------------------------------------------------------------------------------------------

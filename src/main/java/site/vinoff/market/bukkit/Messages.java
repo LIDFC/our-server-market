@@ -45,6 +45,14 @@ public final class Messages {
             case TRADE_ALREADY_FINISHED -> "Сделка уже завершена";
             case ALREADY_CONFIRMED -> "Вы уже подтвердили";
             case OWN_LISTING -> "Это ваш собственный лот";
+            case CHEST_NOT_BOUND -> "У вас нет привязанного сундука. Посмотрите на сундук и наберите /market chest";
+            case CHEST_ALREADY_BOUND -> "Этот сундук уже чей-то склад";
+            case CHEST_MISSING -> "Привязанного сундука больше нет на месте";
+            case CHEST_CHANGED -> "Содержимое сундука изменилось, попробуйте ещё раз";
+            case CHEST_IN_USE -> "Сундук сейчас открыт, закройте его и повторите";
+            case CHEST_BUSY -> "С этим сундуком уже идёт операция";
+            case CHEST_LOCKED -> "Сундук проверяется после перезапуска, подождите немного";
+            case CHEST_UNAVAILABLE -> "До сундука сейчас не добраться, попробуйте позже";
             case EMPTY_LISTING -> "Сначала положите в лот хотя бы один предмет";
             case TOO_MANY_ITEMS -> "В один лот помещается не больше 27 стаков";
             case INVALID_REQUEST -> fallback == null ? "Так нельзя" : fallback;
