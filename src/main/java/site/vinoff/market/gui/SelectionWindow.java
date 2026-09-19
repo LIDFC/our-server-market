@@ -121,7 +121,9 @@ public final class SelectionWindow extends MarketWindow {
             lines.add(Icons.line("  • " + blob.summary()));
         }
         if (twoSided) {
-            lines.add(Icons.line(selection.wantedCount() == 0 ? "Взамен: что угодно (не указано)" : "Хотите взамен:"));
+            lines.add(Icons.line(type == ListingType.WANTED
+                    ? (selection.wantedCount() == 0 ? "Не указано, что вы ищете" : "Ищете:")
+                    : (selection.wantedCount() == 0 ? "Взамен: что угодно (не указано)" : "Хотите взамен:")));
             addWishLines(lines);
         }
         lines.add(Icons.line(" "));
@@ -134,14 +136,30 @@ public final class SelectionWindow extends MarketWindow {
                 lines);
     }
 
+    /**
+     * What the "what I want" half is called. For a wanted listing it is what the player is looking for, not what they
+     * are asking in return — the same distinction the submit message already makes.
+     *
+     * <p>Static so it can be tested: building a window needs a running server, a listing type does not.
+     */
+    static String headingFor(ListingType type) {
+        return type == ListingType.WANTED ? "Что ищу" : "Что хочу взамен";
+    }
+
+    String wishHeading() {
+        return headingFor(type);
+    }
+
     /** The way into the catalogue, with the wish list built so far written on it. */
     private ItemStack wishButton() {
         List<Component> lines = new ArrayList<>();
         if (selection.wantedCount() == 0) {
             lines.add(Icons.line("Пока ничего не выбрано"));
-            lines.add(Icons.line("Без этого лот значит «предложите что-нибудь»"));
+            lines.add(Icons.line(type == ListingType.WANTED
+                    ? "Без этого лот выложить нельзя"
+                    : "Без этого лот значит «предложите что-нибудь»"));
         } else {
-            lines.add(Icons.line("Вы хотите взамен:"));
+            lines.add(Icons.line(type == ListingType.WANTED ? "Вы ищете:" : "Вы хотите взамен:"));
             addWishLines(lines);
         }
         lines.add(Icons.line(" "));
@@ -149,7 +167,7 @@ public final class SelectionWindow extends MarketWindow {
         lines.add(Icons.line("Там есть поиск по названию"));
         return Icons.rich(
                 selection.wantedCount() == 0 ? Material.HOPPER : Material.CHEST,
-                "Что хочу взамен",
+                wishHeading(),
                 lines);
     }
 
@@ -203,7 +221,7 @@ public final class SelectionWindow extends MarketWindow {
                 "Как это работает",
                 "Снизу — ваши вещи: клик по вещи",
                 "значит «я это отдаю».",
-                "Что вы хотите взамен — в каталоге",
+                type == ListingType.WANTED ? "Что вы ищете — в каталоге" : "Что вы хотите взамен — в каталоге",
                 "справа, вещи для этого не нужны.");
     }
 

@@ -9,6 +9,7 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import site.vinoff.market.core.ItemBlob;
+import site.vinoff.market.core.ListingType;
 
 class SelectionTest {
 
@@ -103,6 +104,15 @@ class SelectionTest {
         assertEquals(Selection.Result.REMOVED, selection.forgetWanted("emerald"));
         assertEquals(Selection.Result.UNCHANGED, selection.forgetWanted("emerald"));
         assertEquals(List.of("diamond"), List.copyOf(selection.wanted().keySet()));
+    }
+
+    @Test
+    @DisplayName("a wanted listing asks what you are looking for, not what you want in return")
+    void wishHeading() {
+        assertEquals("Что ищу", SelectionWindow.headingFor(ListingType.WANTED));
+        for (ListingType other : new ListingType[] {ListingType.TRADE, ListingType.GIVEAWAY, ListingType.GIFT}) {
+            assertEquals("Что хочу взамен", SelectionWindow.headingFor(other), other + " asks for something in return");
+        }
     }
 
     @Test

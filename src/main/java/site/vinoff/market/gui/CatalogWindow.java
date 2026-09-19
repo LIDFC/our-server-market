@@ -28,7 +28,8 @@ public final class CatalogWindow extends MarketWindow {
     private final List<Material> found;
 
     public CatalogWindow(Gui gui, SelectionWindow origin, String query, int page) {
-        super(title(query, page), 6);
+        // origin is a constructor parameter, so it may be used before the fields are assigned
+        super(title(origin.wishHeading(), query, page), 6);
         this.gui = gui;
         this.origin = origin;
         this.query = query == null ? "" : query;
@@ -38,8 +39,8 @@ public final class CatalogWindow extends MarketWindow {
     }
 
     /** Chest titles are short, so a long query is cut rather than pushing the page number off the screen. */
-    private static String title(String query, int page) {
-        String what = query == null || query.isBlank() ? "Что хочу взамен" : "Поиск: " + query;
+    private static String title(String heading, String query, int page) {
+        String what = query == null || query.isBlank() ? heading : "Поиск: " + query;
         if (what.length() > 22) {
             what = what.substring(0, 22);
         }
@@ -108,7 +109,7 @@ public final class CatalogWindow extends MarketWindow {
         Map<String, Integer> wanted = selection.wanted();
         String[] lines = new String[wanted.size() + 2];
         int index = 0;
-        lines[index++] = wanted.isEmpty() ? "Вы пока ничего не выбрали" : "Вы хотите взамен:";
+        lines[index++] = wanted.isEmpty() ? "Вы пока ничего не выбрали" : origin.wishHeading() + ":";
         for (Map.Entry<String, Integer> entry : wanted.entrySet()) {
             lines[index++] = "  • " + entry.getValue() + " шт. " + entry.getKey();
         }
