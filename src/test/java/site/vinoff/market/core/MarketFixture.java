@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.logging.Logger;
 import site.vinoff.market.core.port.MarketClock;
+import site.vinoff.market.storage.ChestRepository;
 import site.vinoff.market.storage.Database;
 import site.vinoff.market.storage.DeliveryRepository;
 import site.vinoff.market.storage.MarketRepository;
@@ -27,6 +28,7 @@ public final class MarketFixture implements AutoCloseable {
 
     public final Path databaseFile;
     public final FakeInventory inventory = new FakeInventory();
+    public final FakeContainer containers = new FakeContainer();
     public final UUID alice = UUID.nameUUIDFromBytes("OfflinePlayer:Alice".getBytes(StandardCharsets.UTF_8));
     public final UUID bob = UUID.nameUUIDFromBytes("OfflinePlayer:Bob".getBytes(StandardCharsets.UTF_8));
     public final UUID carol = UUID.nameUUIDFromBytes("OfflinePlayer:Carol".getBytes(StandardCharsets.UTF_8));
@@ -47,7 +49,15 @@ public final class MarketFixture implements AutoCloseable {
     private void start() {
         database = Database.open(databaseFile);
         MarketRepository market = new MarketRepository(database.bootId());
-        service = new MarketService(database, market, new DeliveryRepository(), inventory, MarketClock.system(), Logger.getLogger("market-test"));
+        service = new MarketService(
+                database,
+                market,
+                new DeliveryRepository(),
+                new ChestRepository(),
+                inventory,
+                containers,
+                MarketClock.system(),
+                Logger.getLogger("market-test"));
         service.seePlayer(alice, "Alice");
         service.seePlayer(bob, "Bob");
         service.seePlayer(carol, "Carol");

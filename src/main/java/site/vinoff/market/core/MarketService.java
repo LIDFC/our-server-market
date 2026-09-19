@@ -21,8 +21,17 @@ import site.vinoff.market.core.model.PendingDelivery;
 import site.vinoff.market.core.model.StoredItem;
 import site.vinoff.market.core.model.Trade;
 import site.vinoff.market.core.model.TradeParty;
+import site.vinoff.market.core.chest.ChestContents;
+import site.vinoff.market.core.chest.ChestKind;
+import site.vinoff.market.core.chest.ChestPlan;
+import site.vinoff.market.core.chest.ChestSnapshot;
+import site.vinoff.market.core.chest.ChestState;
+import site.vinoff.market.core.model.BoundChest;
+import site.vinoff.market.core.model.ChestIntent;
+import site.vinoff.market.core.port.ContainerPort;
 import site.vinoff.market.core.port.InventoryPort;
 import site.vinoff.market.core.port.MarketClock;
+import site.vinoff.market.storage.ChestRepository;
 import site.vinoff.market.storage.Database;
 import site.vinoff.market.storage.DeliveryRepository;
 import site.vinoff.market.storage.MarketRepository;
@@ -49,7 +58,9 @@ public final class MarketService {
     private final Database database;
     private final MarketRepository market;
     private final DeliveryRepository deliveries;
+    private final ChestRepository chests;
     private final InventoryPort inventory;
+    private final ContainerPort containers;
     private final MarketClock clock;
     private final Logger log;
 
@@ -57,13 +68,17 @@ public final class MarketService {
             Database database,
             MarketRepository market,
             DeliveryRepository deliveries,
+            ChestRepository chests,
             InventoryPort inventory,
+            ContainerPort containers,
             MarketClock clock,
             Logger log) {
         this.database = database;
         this.market = market;
         this.deliveries = deliveries;
+        this.chests = chests;
         this.inventory = inventory;
+        this.containers = containers;
         this.clock = clock;
         this.log = log;
     }
@@ -431,6 +446,381 @@ public final class MarketService {
 
     public int pendingCount(UUID player) {
         return database.read(connection -> deliveries.pendingCount(connection, player));
+    }
+
+    // bound chests -------------------------------------------------------------------------------------------------
+
+    /**
+     * Makes a chest a player's marketplace stock.
+     *
+     * <p>Binding stays something done in the game, looking at the block, and is deliberately not offered over HTTP:
+     * a browser has no way to point at a block, and "which chest did you mean" is not a question worth answering
+     * from one.
+     */
+    public long bindChest(UUID owner, String ownerName, UUID world, int x, int y, int z, ChestKind kind, int[] pair) {
+        Instant now = clock.now();
+        return database.inTransaction(connection -> {
+            market.touchIdentity(connection, owner, ownerName, now);
+            if (chests.byBlock(connection, world, x, y, z).isPresent()) {
+                throw new MarketException(MarketError.CHEST_ALREADY_BOUND, "This chest is already somebody's stock");
+            }
+            if (pair != null && chests.byBlock(connection, world, pair[0], pair[1], pair[2]).isPresent()) {
+                // the other half is already bound: binding this one would give two players one box
+                throw new MarketException(MarketError.CHEST_ALREADY_BOUND, "The other half of this chest is bound");
+            }
+            chests.byOwner(connection, owner).ifPresent(previous -> {
+                if (chests.hasOpenIntent(connection, previous.id())) {
+                    throw new MarketException(MarketError.CHEST_LOCKED, "Your current chest has an operation in flight");
+                }
+                chests.release(connection, previous.id(), ChestState.RELEASED, "REBOUND", now);
+                market.event(connection, now, "CHEST_RELEASED", owner, null, null, null, "rebound");
+            });
+            long id = chests.bind(connection, owner, world, x, y, z, kind, pair, now);
+            // agreed with from the moment it is bound: nothing has happened to it yet
+            chests.markVerified(connection, id, database.bootId(), now);
+            market.event(connection, now, "CHEST_BOUND", owner, null, null, null, kind.name() + " " + x + "," + y + "," + z);
+            return id;
+        });
+    }
+
+    /** Lets a chest go. Refused while an operation is open on it: that operation still has to be settled. */
+    public void releaseChest(UUID owner, String reason) {
+        Instant now = clock.now();
+        database.inTransaction(connection -> {
+            BoundChest chest = chests.byOwner(connection, owner)
+                    .orElseThrow(() -> new MarketException(MarketError.CHEST_NOT_BOUND, "You have no chest bound"));
+            if (chests.hasOpenIntent(connection, chest.id())) {
+                throw new MarketException(MarketError.CHEST_LOCKED, "This chest has an operation in flight");
+            }
+            chests.release(connection, chest.id(), ChestState.RELEASED, reason, now);
+            market.event(connection, now, "CHEST_RELEASED", owner, null, null, null, reason);
+            return null;
+        });
+    }
+
+    public Optional<BoundChest> chestById(long chestId) {
+        return database.read(connection -> chests.byId(connection, chestId));
+    }
+
+    public Optional<BoundChest> chestOf(UUID owner) {
+        return database.read(connection -> chests.byOwner(connection, owner));
+    }
+
+    public Optional<BoundChest> chestAt(UUID world, int x, int y, int z) {
+        return database.read(connection -> chests.byBlock(connection, world, x, y, z));
+    }
+
+    /** What is in a player's chest right now. Settles it first, so nobody is shown a rolled back world. */
+    public ChestContents readChest(UUID owner) {
+        return containers.read(requireUsableChest(owner));
+    }
+
+    /**
+     * Creates a listing out of items in the owner's bound chest.
+     *
+     * <p>The third protocol of the marketplace, beside taking from a player and giving to one. It exists because a
+     * chest, unlike a player file, cannot be flushed to disk on demand. So instead of forcing the world to be durable
+     * before the database commits, every operation is numbered, the number is stamped on the block, and a later read
+     * compares the two and repairs whichever side is behind.
+     *
+     * <p>{@code expectedDigest} is what the caller last saw the chest as, and it is required rather than optional:
+     * without it a replay carrying a fresh idempotency key would quietly take a second helping out of a stack that
+     * had only been partly emptied, because the slot would still hold the same item.
+     */
+    public long createListingFromChest(
+            UUID owner,
+            String ownerName,
+            ListingType type,
+            UUID recipient,
+            String recipientName,
+            String note,
+            String expectedDigest,
+            ChestPlan plan,
+            List<ItemBlob> wanted) {
+        if (plan.totalStacks() > MAX_ITEMS_PER_LISTING) {
+            throw new MarketException(MarketError.TOO_MANY_ITEMS, "A listing holds at most " + MAX_ITEMS_PER_LISTING + " stacks");
+        }
+        BoundChest chest = requireUsableChest(owner);
+
+        ChestContents before = containers.read(chest);
+        if (!before.snapshot().digest().equals(expectedDigest)) {
+            throw new MarketException(MarketError.CHEST_CHANGED, "The chest is not what you last saw");
+        }
+        before.snapshot().verify(plan);
+        String postDigest = before.snapshot().apply(plan).digest();
+
+        List<ItemBlob> taking = new ArrayList<>();
+        for (ChestPlan.Take take : plan.takes()) {
+            ItemBlob whole = before.itemAt(take.slot());
+            if (whole == null) {
+                throw new MarketException(MarketError.CHEST_CHANGED, "Slot " + take.slot() + " is empty now");
+            }
+            // the bytes describe one item, so a partial take is the same item carrying a smaller number
+            taking.add(new ItemBlob(whole.data(), take.amount(), whole.summary()));
+        }
+
+        String txId = newTx();
+        Instant started = clock.now();
+        /*
+         * The items are written down before anything is removed, and that ordering is the whole point: if the server
+         * dies after the chest has been emptied but before the listing exists, this table is the only place those
+         * items still exist, and recovery can hand them back from it.
+         */
+        Reserved reserved = database.inTransaction(connection -> {
+            List<String> uids = new ArrayList<>();
+            for (ItemBlob blob : taking) {
+                uids.add(market.insertItem(connection, blob, containers.dataVersion(), started));
+            }
+            long seq = chests.reserveSeq(connection, chest.id());
+            deliveries.insertIntent(
+                    connection, txId, database.bootId(), IntentSource.CHEST, "CHEST_TAKE", owner, null, null,
+                    before.snapshot().digest(), containers.dataVersion(), String.join(",", uids), started);
+            chests.insertIntent(connection, txId, chest.id(), seq, before.snapshot().digest(), postDigest, plan.encode(), started);
+            return new Reserved(seq, uids);
+        });
+
+        try {
+            containers.take(chest, plan, reserved.seq());
+        } catch (RuntimeException refused) {
+            Instant failed = clock.now();
+            database.inTransaction(connection -> {
+                deliveries.transitionIntent(connection, txId, IntentState.INTENT, IntentState.ABORTED, failed);
+                market.event(connection, failed, "CHEST_TAKE_ABORTED", owner, null, null, txId, refused.getMessage());
+                return null;
+            });
+            throw refused;
+        }
+
+        Instant now = clock.now();
+        return database.inTransaction(connection -> {
+            if (!deliveries.transitionIntent(connection, txId, IntentState.INTENT, IntentState.APPLIED, now)) {
+                throw new MarketException(MarketError.STORAGE_FAILURE, "The intent record disappeared");
+            }
+            market.touchIdentity(connection, owner, ownerName, now);
+            long listingId = market.insertListing(
+                    connection,
+                    owner,
+                    type,
+                    ListingState.ACTIVE,
+                    recipient,
+                    recipientName == null ? null : recipientName.toLowerCase(java.util.Locale.ROOT),
+                    note,
+                    now,
+                    null);
+            int position = 0;
+            for (String itemUid : reserved.uids()) {
+                market.addListingItem(connection, listingId, ItemRole.OFFERED, position++, itemUid);
+                market.insertEscrow(connection, itemUid, owner, listingId, null, TradeParty.OWNER, now);
+                market.move(
+                        connection, txId, itemUid, Holder.chest(chest.id()), Holder.listing(listingId),
+                        amountOf(connection, itemUid), now);
+            }
+            int wantedPosition = 0;
+            for (ItemBlob blob : wanted) {
+                String itemUid = market.insertItem(connection, blob, containers.dataVersion(), now);
+                market.addListingItem(connection, listingId, ItemRole.WANTED, wantedPosition++, itemUid);
+            }
+            chests.markApplied(connection, chest.id(), reserved.seq(), now);
+            chests.linkListing(connection, txId, listingId);
+            deliveries.transitionIntent(connection, txId, IntentState.APPLIED, IntentState.FINALIZED, now);
+            market.event(connection, now, "LISTING_CREATED", owner, listingId, null, txId, type.name() + " from chest");
+            return listingId;
+        });
+    }
+
+    private record Reserved(long seq, List<String> uids) {}
+
+    /**
+     * Brings one chest and the marketplace back into agreement after a restart.
+     *
+     * <p>This is where the numbering pays for itself. Two facts are read: what the chest holds now, and the journal
+     * number stamped on the block. Against what the database believes, they say which side is stale, and only three
+     * outcomes are ever allowed — abort the operation, finish it, or repeat it. Anything that matches neither the
+     * fingerprint before nor the one after is left alone as {@code MANUAL}, because an extra return duplicates an item
+     * exactly as surely as a missing one loses it.
+     *
+     * <p>Safe to run again at any time: every branch ends with the chest and the block agreeing, and a chest that
+     * already agrees does nothing.
+     */
+    public void reconcileChest(long chestId) {
+        BoundChest chest = database.read(connection -> chests.byId(connection, chestId)).orElse(null);
+        if (chest == null || !chest.usable()) {
+            return;
+        }
+
+        ChestContents look;
+        try {
+            look = containers.read(chest);
+        } catch (MarketException problem) {
+            if (problem.error() == MarketError.CHEST_MISSING) {
+                loseChest(chest, "MISSING");
+            }
+            // unreachable for now: a later sweep will try again, and until then nothing may be taken from it
+            return;
+        }
+
+        for (ChestIntent intent : database.read(connection -> chests.unresolved(connection, chestId))) {
+            settleOpenIntent(chest, intent, look);
+            look = containers.read(chest);
+        }
+
+        BoundChest after = database.read(connection -> chests.byId(connection, chestId)).orElse(null);
+        if (after == null || !after.usable()) {
+            return;
+        }
+        if (!catchUpWorld(after, look)) {
+            return;
+        }
+        Instant now = clock.now();
+        database.inTransaction(connection -> {
+            chests.markVerified(connection, chestId, database.bootId(), now);
+            return null;
+        });
+    }
+
+    /** An operation that was open when the server stopped. Exactly one of three things happened to it. */
+    private void settleOpenIntent(BoundChest chest, ChestIntent intent, ChestContents look) {
+        Instant now = clock.now();
+        String digest = look.snapshot().digest();
+        Intent record = database.read(connection -> deliveries.intent(connection, intent.txId())).orElse(null);
+        if (record == null) {
+            return;
+        }
+        if (record.dataVersion() != containers.dataVersion()) {
+            manual(chest, intent, "the server data version changed, the chest is not touched");
+            return;
+        }
+        if (record.state() != IntentState.INTENT) {
+            // the take transaction is a single commit, so nothing else should ever be seen here
+            manual(chest, intent, "an unexpected intent state: " + record.state());
+            return;
+        }
+
+        if (digest.equals(intent.preDigest())) {
+            database.inTransaction(connection -> {
+                deliveries.transitionIntent(connection, intent.txId(), IntentState.INTENT, IntentState.ABORTED, now);
+                market.event(
+                        connection, now, "RECOVERY", chest.ownerUuid(), null, null, intent.txId(),
+                        "the chest never lost the items, nothing was created");
+                return null;
+            });
+            return;
+        }
+        if (digest.equals(intent.postDigest())) {
+            // the items left the chest but the listing was never written: they exist only in the items table
+            database.inTransaction(connection -> {
+                int returned = 0;
+                for (String itemUid : record.detail().split(",")) {
+                    if (itemUid.isBlank() || hasMovement(connection, itemUid)) {
+                        continue;
+                    }
+                    long deliveryId = deliveries.insertDelivery(
+                            connection, chest.ownerUuid(), itemUid, DeliveryReason.RECOVERED, null, now);
+                    market.move(
+                            connection, intent.txId(), itemUid, Holder.chest(chest.id()), Holder.pending(deliveryId),
+                            amountOf(connection, itemUid), now);
+                    returned++;
+                }
+                chests.markApplied(connection, chest.id(), intent.seq(), now);
+                deliveries.transitionIntent(connection, intent.txId(), IntentState.INTENT, IntentState.FINALIZED, now);
+                market.event(
+                        connection, now, "RECOVERY", chest.ownerUuid(), null, null, intent.txId(),
+                        returned + " stack(s) from the chest returned after an interrupted operation");
+                return null;
+            });
+            return;
+        }
+        manual(chest, intent, "the chest matches neither the fingerprint before nor the one after");
+    }
+
+    /**
+     * Repeats an operation the world lost. Returns false when the chest was left for an administrator, in which case
+     * it stays unverified and therefore untouchable.
+     */
+    private boolean catchUpWorld(BoundChest chest, ChestContents look) {
+        if (look.seq() == chest.appliedSeq()) {
+            return true;
+        }
+        if (look.seq() > chest.appliedSeq()) {
+            // the block is ahead of the database: the database was restored from a backup
+            manual(chest, null, "the chest is ahead of the marketplace, seq " + look.seq() + " against " + chest.appliedSeq());
+            return false;
+        }
+
+        ChestIntent intent = database.read(connection -> chests.bySeq(connection, chest.id(), chest.appliedSeq())).orElse(null);
+        if (intent == null) {
+            manual(chest, null, "no record of operation " + chest.appliedSeq() + ", which the chest has not seen");
+            return false;
+        }
+        String digest = look.snapshot().digest();
+        if (digest.equals(intent.postDigest())) {
+            // the contents are right, only the stamp is behind
+            containers.stamp(chest, chest.appliedSeq());
+            return true;
+        }
+        if (!digest.equals(intent.preDigest())) {
+            manual(chest, intent, "the chest matches neither fingerprint of operation " + chest.appliedSeq());
+            return false;
+        }
+        /*
+         * The listing exists and holds these items, but the world rolled back to before they left the chest. Left
+         * alone this is a duplication: the same items in escrow and in the box. Repeating the plan is the only
+         * outcome that keeps each item in one place, and it is safe because the plan says exactly which slot and
+         * which item, and the chest still matches the fingerprint from before.
+         */
+        containers.take(chest, intent.decodedPlan(), chest.appliedSeq());
+        Instant now = clock.now();
+        database.inTransaction(connection -> {
+            market.event(
+                    connection, now, "RECOVERY", chest.ownerUuid(), intent.listingId(), null, intent.txId(),
+                    "the world had rolled back; operation " + chest.appliedSeq() + " was applied again");
+            return null;
+        });
+        return true;
+    }
+
+    private void manual(BoundChest chest, ChestIntent intent, String why) {
+        Instant now = clock.now();
+        log.severe("Chest " + chest.id() + " needs an administrator: " + why);
+        database.inTransaction(connection -> {
+            if (intent != null) {
+                deliveries.transitionIntent(connection, intent.txId(), IntentState.INTENT, IntentState.MANUAL, now);
+            }
+            market.event(
+                    connection, now, "RECOVERY_MANUAL", chest.ownerUuid(), intent == null ? null : intent.listingId(),
+                    null, intent == null ? null : intent.txId(), why);
+            return null;
+        });
+    }
+
+    /** The block is not the chest it was. Nothing of the marketplace was in it, but the owner should hear about it. */
+    private void loseChest(BoundChest chest, String reason) {
+        Instant now = clock.now();
+        log.warning("The bound chest of " + chest.ownerUuid() + " is gone (" + reason + ")");
+        database.inTransaction(connection -> {
+            chests.release(connection, chest.id(), ChestState.BROKEN, reason, now);
+            market.event(connection, now, "CHEST_LOST", chest.ownerUuid(), null, null, null, reason);
+            return null;
+        });
+    }
+
+    private BoundChest requireUsableChest(UUID owner) {
+        BoundChest found = database.read(connection -> chests.byOwner(connection, owner))
+                .orElseThrow(() -> new MarketException(MarketError.CHEST_NOT_BOUND, "You have no chest bound"));
+        if (found.settling(database.bootId())) {
+            long settlingId = found.id();
+            reconcileChest(settlingId);
+            found = database.read(connection -> chests.byId(connection, settlingId))
+                    .orElseThrow(() -> new MarketException(MarketError.CHEST_MISSING, "The chest is gone"));
+        }
+        if (!found.usable()) {
+            throw new MarketException(MarketError.CHEST_MISSING, "That chest is no longer there");
+        }
+        long id = found.id();
+        if (database.read(connection -> chests.hasOpenIntent(connection, id))) {
+            throw new MarketException(MarketError.CHEST_BUSY, "An operation on this chest is still open");
+        }
+        return found;
     }
 
     // reading ------------------------------------------------------------------------------------------------------

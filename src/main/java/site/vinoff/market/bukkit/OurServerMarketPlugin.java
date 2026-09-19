@@ -13,6 +13,7 @@ import site.vinoff.market.gui.Icons;
 import site.vinoff.market.gui.WindowManager;
 import site.vinoff.market.core.port.MarketClock;
 import site.vinoff.market.http.ApiServer;
+import site.vinoff.market.storage.ChestRepository;
 import site.vinoff.market.storage.Database;
 import site.vinoff.market.storage.DeliveryRepository;
 import site.vinoff.market.storage.MarketRepository;
@@ -51,7 +52,9 @@ public final class OurServerMarketPlugin extends JavaPlugin {
         MarketRepository repository = new MarketRepository(database.bootId());
         DeliveryRepository deliveries = new DeliveryRepository();
         BukkitInventoryPort inventory = new BukkitInventoryPort(getServer(), log);
-        MarketService market = new MarketService(database, repository, deliveries, inventory, MarketClock.system(), log);
+        MarketService market = new MarketService(
+                database, repository, deliveries, new ChestRepository(), inventory, new UnboundContainerPort(),
+                MarketClock.system(), log);
 
         Icons.init(this);
         windows = new WindowManager(this, inventory, log);

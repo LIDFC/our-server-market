@@ -242,6 +242,37 @@ public final class DeliveryRepository {
     }
 
     /** Intents left open by an earlier run: these are the ones whose inventory digest has to be checked at login. */
+    /** One intent by its transaction id, whatever its state. */
+    public Optional<Intent> intent(Connection connection, String txId) {
+        try (PreparedStatement select = connection.prepareStatement(
+                "SELECT tx_id, boot_id, op, player_uuid, listing_id, trade_id, state, pre_digest, data_version, detail,"
+                        + " created_at, resolved_at FROM intents WHERE tx_id = ?")) {
+            select.setString(1, txId);
+            try (ResultSet row = select.executeQuery()) {
+                return row.next() ? Optional.of(readIntent(row)) : Optional.empty();
+            }
+        } catch (SQLException failure) {
+            throw new StorageException("Could not read intent " + txId, failure);
+        }
+    }
+
+    private static Intent readIntent(ResultSet row) throws SQLException {
+        String resolved = row.getString("resolved_at");
+        return new Intent(
+                row.getString("tx_id"),
+                row.getString("boot_id"),
+                row.getString("op"),
+                UUID.fromString(row.getString("player_uuid")),
+                nullableLong(row, "listing_id"),
+                nullableLong(row, "trade_id"),
+                IntentState.valueOf(row.getString("state")),
+                row.getString("pre_digest"),
+                row.getInt("data_version"),
+                row.getString("detail"),
+                Instant.parse(row.getString("created_at")),
+                resolved == null ? null : Instant.parse(resolved));
+    }
+
     /**
      * Intents left over from an earlier boot, for login recovery.
      *
@@ -268,20 +299,7 @@ public final class DeliveryRepository {
             }
             try (ResultSet row = select.executeQuery()) {
                 while (row.next()) {
-                    String resolved = row.getString("resolved_at");
-                    intents.add(new Intent(
-                            row.getString("tx_id"),
-                            row.getString("boot_id"),
-                            row.getString("op"),
-                            UUID.fromString(row.getString("player_uuid")),
-                            nullableLong(row, "listing_id"),
-                            nullableLong(row, "trade_id"),
-                            IntentState.valueOf(row.getString("state")),
-                            row.getString("pre_digest"),
-                            row.getInt("data_version"),
-                            row.getString("detail"),
-                            Instant.parse(row.getString("created_at")),
-                            resolved == null ? null : Instant.parse(resolved)));
+                    intents.add(readIntent(row));
                 }
             }
         } catch (SQLException failure) {
