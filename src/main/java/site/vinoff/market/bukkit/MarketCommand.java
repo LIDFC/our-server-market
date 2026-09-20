@@ -20,6 +20,7 @@ import site.vinoff.market.core.ListingType;
 import site.vinoff.market.core.MarketError;
 import site.vinoff.market.core.MarketException;
 import site.vinoff.market.core.MarketService;
+import site.vinoff.market.core.chest.ChestContents;
 import site.vinoff.market.core.chest.ChestKind;
 import site.vinoff.market.core.model.BoundChest;
 import site.vinoff.market.core.model.Identity;
@@ -43,10 +44,12 @@ public final class MarketCommand implements CommandExecutor, TabCompleter {
 
     private final MarketService market;
     private final Gui gui;
+    private final ChestKeeper chests;
 
-    public MarketCommand(MarketService market, Gui gui) {
+    public MarketCommand(MarketService market, Gui gui, ChestKeeper chests) {
         this.market = market;
         this.gui = gui;
+        this.chests = chests;
     }
 
     @Override
@@ -125,10 +128,11 @@ public final class MarketCommand implements CommandExecutor, TabCompleter {
             case "" -> bindChest(player);
             case "info" -> chestInfo(player);
             case "release", "unbind" -> {
+                long released = market.chestOf(player.getUniqueId()).map(BoundChest::id).orElse(0L);
                 market.releaseChest(player.getUniqueId(), "PLAYER");
+                chests.released(released);
                 player.sendMessage(Messages.info("Сундук отвязан. Рынок больше не считает его вашим складом"));
             }
-            case "stamp" -> stampChest(player, args);
             default -> {
                 player.sendMessage(Messages.info("сундук:"));
                 player.sendMessage(Messages.hint("/market chest — привязать сундук, на который вы смотрите"));
@@ -152,10 +156,10 @@ public final class MarketCommand implements CommandExecutor, TabCompleter {
                 found.pairCoordinates());
         // a freshly bound chest starts level with the marketplace, which believes nothing has happened to it yet
         ChestLocator.writeSeq(found, 0L);
+        market.chestOf(player.getUniqueId()).ifPresent(chests::bound);
         player.sendMessage(Messages.good(
                 (found.kind() == ChestKind.DOUBLE ? "Большой сундук" : "Сундук") + " привязан как ваш склад (#" + id + ")"));
-        // no promises that are not kept yet: the protection listener is the next piece of work
-        player.sendMessage(Messages.hint("Защита сундука от чужих рук и воронок ещё не включена"));
+        player.sendMessage(Messages.hint("Чужие его не откроют и не сломают, воронки из него ничего не вытянут"));
         player.sendMessage(Messages.hint("Проверить, что рынок его видит: /market chest info"));
     }
 
@@ -173,33 +177,18 @@ public final class MarketCommand implements CommandExecutor, TabCompleter {
             return;
         }
         long onBlock = ChestLocator.readSeq(blocks.get());
-        player.sendMessage(Messages.hint("номер операции: на блоке " + onBlock + ", у рынка " + chest.appliedSeq()));
         if (onBlock != chest.appliedSeq()) {
-            player.sendMessage(Messages.bad("блок и рынок расходятся — так выглядит откат мира"));
+            // worth saying out loud: it is what a world rolled back to before the last operation looks like
+            player.sendMessage(Messages.bad("номер операции на блоке " + onBlock + ", у рынка " + chest.appliedSeq()));
+        }
+        try {
+            ChestContents contents = market.readChest(player.getUniqueId());
+            player.sendMessage(Messages.hint("занято слотов: " + contents.snapshot().filled().size()
+                    + ", предметов: " + contents.snapshot().totalItems()));
+        } catch (MarketException problem) {
+            player.sendMessage(Messages.of(problem.error(), problem.getMessage()));
         }
     }
-
-    /**
-     * Writes a number onto the block by hand.
-     *
-     * <p>A diagnostic, and the only way to answer the one question the whole design rests on: does a number written
-     * into a chest survive a restart, and is it lost together with a chunk the server never saved? Stamp a number,
-     * stop the server two different ways, and read it back.
-     */
-    private void stampChest(Player player, String[] args) {
-        requirePermission(player, "ourserver.market.admin");
-        if (args.length < 3) {
-            throw new MarketException(MarketError.INVALID_REQUEST, "Укажите номер: /market chest stamp 7");
-        }
-        long seq = parseId(args[2], "операции");
-        BoundChest chest = market.chestOf(player.getUniqueId())
-                .orElseThrow(() -> new MarketException(MarketError.CHEST_NOT_BOUND, "Сначала привяжите сундук"));
-        ChestLocator.Found found = ChestLocator.blocksOf(player.getServer(), chest)
-                .orElseThrow(() -> new MarketException(MarketError.CHEST_MISSING, "Блок не найден"));
-        ChestLocator.writeSeq(found, seq);
-        player.sendMessage(Messages.good("На блок записан номер " + seq + ". Прочитать: /market chest info"));
-    }
-
 
     private void browse(Player player, int page) {
         int perPage = 8;

@@ -32,6 +32,7 @@ public final class OurServerMarketPlugin extends JavaPlugin {
     private Database database;
     private ApiServer api;
     private WindowManager windows;
+    private ChestKeeper chests;
     private ChatPrompt prompts;
 
     @Override
@@ -52,8 +53,10 @@ public final class OurServerMarketPlugin extends JavaPlugin {
         MarketRepository repository = new MarketRepository(database.bootId());
         DeliveryRepository deliveries = new DeliveryRepository();
         BukkitInventoryPort inventory = new BukkitInventoryPort(getServer(), log);
+        MainThread mainThread = new MainThread(this, log);
+        BukkitContainerPort containers = new BukkitContainerPort(getServer(), mainThread);
         MarketService market = new MarketService(
-                database, repository, deliveries, new ChestRepository(), inventory, new UnboundContainerPort(),
+                database, repository, deliveries, new ChestRepository(), inventory, containers,
                 MarketClock.system(), log);
 
         Icons.init(this);
@@ -68,9 +71,12 @@ public final class OurServerMarketPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new GuiListener(windows), this);
         getServer().getPluginManager().registerEvents(prompts, this);
 
+        chests = new ChestKeeper(this, market, log);
+        getServer().getPluginManager().registerEvents(new ChestProtectionListener(market, chests, log), this);
+
         PluginCommand command = getCommand("market");
         if (command != null) {
-            MarketCommand handler = new MarketCommand(market, gui);
+            MarketCommand handler = new MarketCommand(market, gui, chests);
             command.setExecutor(handler);
             command.setTabCompleter(handler);
         }
@@ -88,6 +94,9 @@ public final class OurServerMarketPlugin extends JavaPlugin {
             log.warning("Recovery: " + report.escrowReturned() + " stack(s) returned to their owners, "
                     + report.handoversAwaitingLogin() + " handover(s) waiting for their player to log in.");
         }
+
+        // after the recovery above, so a chest whose operation was cut short is settled with the rest of them
+        chests.start();
 
         scheduleExpiry(market, log);
         startApi(market, deliveries, log);

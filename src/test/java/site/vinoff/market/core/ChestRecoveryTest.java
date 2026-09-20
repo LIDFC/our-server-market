@@ -2,6 +2,7 @@ package site.vinoff.market.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -184,6 +185,26 @@ class ChestRecoveryTest {
         assertEquals(0, fixture.escrowCount(), "nothing was created");
         assertEquals(0, fixture.deliveryCount(fixture.alice), "and nothing was handed out");
         assertTrue(fixture.count("SELECT COUNT(*) FROM intents WHERE state = 'MANUAL'") > 0, "an administrator decides");
+    }
+
+    @Test
+    @DisplayName("a chest left for an administrator is frozen: nothing more can be listed out of it")
+    void frozenUntilAnAdministratorLooks() {
+        fixture.containers.crashAfterTake();
+        assertTrue(runAndSwallow(this::listEverything));
+        fixture.containers.put(chestId, 7, FakeContainer.item("bread", 5));
+        fixture.restart();
+        market = fixture.service();
+        market.reconcileChest(chestId);
+
+        // the check ended in MANUAL, so the chest was never agreed with, and a chest not agreed with does not open
+        MarketException refused = assertThrows(
+                MarketException.class,
+                () -> market.createListingFromChest(
+                        fixture.alice, "Alice", ListingType.GIVEAWAY, null, null, null, "whatever",
+                        new ChestPlan(List.of(new ChestPlan.Take(7, "b".repeat(64), 1))), List.of()));
+        assertEquals(MarketError.CHEST_LOCKED, refused.error());
+        assertEquals(5, fixture.containers.totalItems(), "the bread is still there, untouched");
     }
 
     @Test

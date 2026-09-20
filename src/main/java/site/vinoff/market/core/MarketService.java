@@ -510,6 +510,21 @@ public final class MarketService {
         return database.read(connection -> chests.byBlock(connection, world, x, y, z));
     }
 
+    /** Every chest the marketplace holds a binding for. Read once at startup to fill the index of blocks. */
+    public List<BoundChest> boundChests() {
+        return database.read(connection -> chests.bound(connection));
+    }
+
+    /** Whether an operation on this chest is still open. Asked at startup, before anybody can reach the block. */
+    public boolean chestHasOpenIntent(long chestId) {
+        return database.read(connection -> chests.hasOpenIntent(connection, chestId));
+    }
+
+    /** This run of the server. A chest carries the boot it was last agreed with, and disagreement means frozen. */
+    public String bootId() {
+        return database.bootId();
+    }
+
     /** What is in a player's chest right now. Settles it first, so nobody is shown a rolled back world. */
     public ChestContents readChest(UUID owner) {
         return containers.read(requireUsableChest(owner));
@@ -812,6 +827,11 @@ public final class MarketService {
             reconcileChest(settlingId);
             found = database.read(connection -> chests.byId(connection, settlingId))
                     .orElseThrow(() -> new MarketException(MarketError.CHEST_MISSING, "The chest is gone"));
+            if (found.usable() && found.settling(database.bootId())) {
+                // the check did not end in agreement: either the world could not be reached, or the chest matches
+                // neither fingerprint and an administrator has to look at it. Until then nothing leaves the box.
+                throw new MarketException(MarketError.CHEST_LOCKED, "This chest has not been checked yet");
+            }
         }
         if (!found.usable()) {
             throw new MarketException(MarketError.CHEST_MISSING, "That chest is no longer there");
