@@ -90,6 +90,11 @@ public final class MarketService {
         return database.inTransaction(connection -> market.touchIdentity(connection, uuid, name, now));
     }
 
+    /** The name the marketplace last saw a player under, which is the only name it will write down for them. */
+    public Optional<Identity> identity(UUID uuid) {
+        return database.read(connection -> market.identity(connection, uuid));
+    }
+
     public Optional<Identity> findPlayer(String name) {
         return database.read(connection -> market.identityByName(connection, name));
     }

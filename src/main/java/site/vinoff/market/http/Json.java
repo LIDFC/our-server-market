@@ -114,33 +114,4 @@ public final class Json {
         }
         return quoted.append('"').toString();
     }
-
-    /** Reads one string field out of a small flat JSON object, without pulling in a parser. */
-    public static String readString(String body, String field) {
-        String needle = quote(field) + ":";
-        int start = body.indexOf(needle);
-        if (start < 0) {
-            return null;
-        }
-        int cursor = start + needle.length();
-        while (cursor < body.length() && Character.isWhitespace(body.charAt(cursor))) {
-            cursor++;
-        }
-        if (cursor >= body.length() || body.charAt(cursor) != '"') {
-            return null;
-        }
-        StringBuilder value = new StringBuilder();
-        for (int index = cursor + 1; index < body.length(); index++) {
-            char symbol = body.charAt(index);
-            if (symbol == '\\' && index + 1 < body.length()) {
-                value.append(body.charAt(++index));
-                continue;
-            }
-            if (symbol == '"') {
-                return value.toString();
-            }
-            value.append(symbol);
-        }
-        return null;
-    }
 }

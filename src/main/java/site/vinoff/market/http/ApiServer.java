@@ -22,6 +22,12 @@ import java.util.logging.Logger;
 import site.vinoff.market.core.MarketError;
 import site.vinoff.market.core.MarketException;
 import site.vinoff.market.core.MarketService;
+import site.vinoff.market.core.chest.ChestContents;
+import site.vinoff.market.core.chest.ChestPlan;
+import site.vinoff.market.core.chest.ChestSlot;
+import site.vinoff.market.core.model.BoundChest;
+import site.vinoff.market.core.model.Identity;
+import site.vinoff.market.core.port.ItemFactoryPort;
 import site.vinoff.market.core.model.Listing;
 import site.vinoff.market.core.model.ListingItem;
 import site.vinoff.market.core.model.MarketEventRecord;
@@ -47,6 +53,7 @@ public final class ApiServer {
     private final MarketService market;
     private final Database database;
     private final DeliveryRepository deliveries;
+    private final ItemFactoryPort items;
     private final String token;
     private final Logger log;
     private final int rateLimitPerMinute;
@@ -56,10 +63,17 @@ public final class ApiServer {
     private ExecutorService workers;
 
     public ApiServer(
-            MarketService market, Database database, DeliveryRepository deliveries, String token, int rateLimitPerMinute, Logger log) {
+            MarketService market,
+            Database database,
+            DeliveryRepository deliveries,
+            ItemFactoryPort items,
+            String token,
+            int rateLimitPerMinute,
+            Logger log) {
         this.market = market;
         this.database = database;
         this.deliveries = deliveries;
+        this.items = items;
         this.token = token;
         this.rateLimitPerMinute = rateLimitPerMinute;
         this.log = log;
@@ -70,7 +84,9 @@ public final class ApiServer {
                 ? InetAddress.getLoopbackAddress()
                 : InetAddress.getByName(bindAddress);
         server = HttpServer.create(new InetSocketAddress(address, port), 0);
-        workers = Executors.newFixedThreadPool(2, runnable -> {
+        // four rather than two: a request that reaches into a chest waits for the server thread, and two of those
+        // at once would leave nothing to answer the reads that need no chest at all
+        workers = Executors.newFixedThreadPool(4, runnable -> {
             Thread thread = new Thread(runnable, "market-api");
             thread.setDaemon(true);
             return thread;
@@ -194,6 +210,7 @@ public final class ApiServer {
                     }
                     send(exchange, 200, Json.object().field("deliveries", array).done());
                 }
+                case "chest" -> send(exchange, 200, chestJson(player));
                 default -> send(exchange, 404, Json.error("NOT_FOUND", "Unknown player view"));
             }
             return;
@@ -231,12 +248,13 @@ public final class ApiServer {
             return;
         }
 
-        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        UUID player = uuid(Json.readString(body, "minecraftUuid"));
+        String raw = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        Map<String, Object> body = JsonReader.readObject(raw);
+        UUID player = uuid(JsonReader.requireString(body, "minecraftUuid"));
         int status;
         String answer;
         try {
-            answer = perform(path, player);
+            answer = perform(path, player, body);
             status = 200;
         } catch (MarketException refused) {
             status = refused.error().httpStatus();
@@ -253,7 +271,20 @@ public final class ApiServer {
     }
 
     /** The actions the website may ask for. Every one of them checks ownership inside the core. */
-    private String perform(String path, UUID player) {
+    private String perform(String path, UUID player, Map<String, Object> body) {
+        if (path.equals("/listings/from-chest")) {
+            return createFromChest(player, body);
+        }
+        if (path.startsWith("/players/") && path.endsWith("/chest/release")) {
+            // the uuid appears twice, in the path and in the body, and they have to agree: the website sends both,
+            // so a mismatch means a request nobody meant to make
+            UUID inPath = uuid(path.substring("/players/".length()).split("/")[0]);
+            if (!inPath.equals(player)) {
+                throw new IllegalArgumentException("The player in the path is not the player in the body");
+            }
+            market.releaseChest(player, "WEBSITE");
+            return Json.object().field("ok", true).done();
+        }
         if (path.startsWith("/listings/") && path.endsWith("/cancel")) {
             long id = pathId(path.substring(0, path.length() - "/cancel".length()), "/listings/");
             market.cancel(player, id, false);
@@ -276,6 +307,95 @@ public final class ApiServer {
             return Json.object().field("ok", true).field("tradeId", id).done();
         }
         throw new IllegalArgumentException("Unknown endpoint");
+    }
+
+    // the bound chest ----------------------------------------------------------------------------------------------
+
+    /**
+     * What the website may see of a chest: slot numbers, amounts, names and hashes.
+     *
+     * <p>The bytes of an item are never sent. A hash says which item a slot holds, which is all the website needs to
+     * show it and all it needs to ask for it back; the bytes would let whoever held them recreate the item outside
+     * the marketplace, and there is no reason to hand them out for a picture of a chest.
+     *
+     * <p>An unbound player is an ordinary answer rather than a 404. Having no chest yet is a state the page has a
+     * screen for, and a page that has to read error codes to draw its normal state gets that wrong eventually.
+     */
+    private String chestJson(UUID player) {
+        Optional<BoundChest> bound = market.chestOf(player);
+        if (bound.isEmpty() || !bound.get().usable()) {
+            return Json.object().field("bound", false).done();
+        }
+        BoundChest chest = bound.get();
+        ChestContents contents = market.readChest(player);
+        Json slots = Json.array();
+        for (ChestSlot slot : contents.snapshot().filled()) {
+            slots.add(Json.object()
+                    .field("slot", slot.slot())
+                    .field("sha256", slot.sha256())
+                    .field("amount", slot.amount())
+                    .field("summary", slot.summary()));
+        }
+        return Json.object()
+                .field("bound", true)
+                .field("chestId", chest.id())
+                .field("kind", chest.kind().name())
+                .field("size", chest.size())
+                .field("world", chest.worldUuid().toString())
+                .field("x", chest.x())
+                .field("y", chest.y())
+                .field("z", chest.z())
+                .field("digest", contents.snapshot().digest())
+                .field("slots", slots)
+                .done();
+    }
+
+    /**
+     * Puts up a listing out of the chest, on behalf of a player who may not even be online.
+     *
+     * <p>Three things are taken from the request and nothing else is trusted: which slots, what is supposed to be in
+     * them, and what the chest looked like as a whole. The fingerprint of the whole chest is required rather than
+     * optional, because without it a repeat of this request under a fresh idempotency key would take a second
+     * helping out of a stack that had only been partly emptied — the slot would still hold the same item, and the
+     * per-slot hash would still match.
+     */
+    private String createFromChest(UUID player, Map<String, Object> body) {
+        String name = market.identity(player)
+                .map(Identity::nameExact)
+                .orElseThrow(() -> new MarketException(
+                        MarketError.PLAYER_NOT_FOUND, "The marketplace has never seen this player"));
+        site.vinoff.market.core.ListingType type = site.vinoff.market.core.ListingType.valueOf(
+                JsonReader.requireString(body, "type").toUpperCase(Locale.ROOT));
+        String digest = JsonReader.requireString(body, "chestDigest");
+        String note = JsonReader.optionalString(body, "note");
+
+        List<ChestPlan.Take> takes = new java.util.ArrayList<>();
+        for (Map<String, Object> line : JsonReader.objectList(body, "take")) {
+            takes.add(new ChestPlan.Take(
+                    JsonReader.requireInt(line, "slot"),
+                    JsonReader.requireString(line, "sha256"),
+                    JsonReader.requireInt(line, "amount")));
+        }
+        List<ItemFactoryPort.Wanted> wishes = new java.util.ArrayList<>();
+        for (Map<String, Object> line : JsonReader.objectList(body, "wanted")) {
+            wishes.add(new ItemFactoryPort.Wanted(
+                    JsonReader.requireString(line, "material"), JsonReader.requireInt(line, "amount")));
+        }
+
+        String askedFor = JsonReader.optionalString(body, "recipientName");
+        UUID recipient = null;
+        String recipientName = null;
+        if (askedFor != null) {
+            Identity found = market.findPlayer(askedFor)
+                    .orElseThrow(() -> new MarketException(
+                            MarketError.PLAYER_NOT_FOUND, "Нет игрока с ником " + askedFor));
+            recipient = found.uuid();
+            recipientName = found.nameExact();
+        }
+        long id = market.createListingFromChest(
+                player, name, type, recipient, recipientName, note, digest,
+                new ChestPlan(takes), items.materialise(wishes));
+        return Json.object().field("ok", true).field("listingId", id).done();
     }
 
     // shapes -------------------------------------------------------------------------------------------------------

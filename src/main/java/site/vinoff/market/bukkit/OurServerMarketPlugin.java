@@ -11,6 +11,7 @@ import site.vinoff.market.gui.Gui;
 import site.vinoff.market.gui.GuiListener;
 import site.vinoff.market.gui.Icons;
 import site.vinoff.market.gui.WindowManager;
+import site.vinoff.market.core.port.ItemFactoryPort;
 import site.vinoff.market.core.port.MarketClock;
 import site.vinoff.market.http.ApiServer;
 import site.vinoff.market.storage.ChestRepository;
@@ -99,7 +100,7 @@ public final class OurServerMarketPlugin extends JavaPlugin {
         chests.start();
 
         scheduleExpiry(market, log);
-        startApi(market, deliveries, log);
+        startApi(market, deliveries, new BukkitItemFactory(mainThread), log);
         log.info("OurServerMarket is ready.");
     }
 
@@ -123,7 +124,7 @@ public final class OurServerMarketPlugin extends JavaPlugin {
         log.info("Listings are closed after " + days + " day(s) without a buyer.");
     }
 
-    private void startApi(MarketService market, DeliveryRepository deliveries, Logger log) {
+    private void startApi(MarketService market, DeliveryRepository deliveries, ItemFactoryPort items, Logger log) {
         if (!getConfig().getBoolean("api.enabled", true)) {
             log.info("The marketplace API is switched off in config.yml.");
             return;
@@ -138,7 +139,7 @@ public final class OurServerMarketPlugin extends JavaPlugin {
             return;
         }
         api = new ApiServer(
-                market, database, deliveries, token, getConfig().getInt("api.rate-limit-per-minute", 120), log);
+                market, database, deliveries, items, token, getConfig().getInt("api.rate-limit-per-minute", 120), log);
         try {
             api.start(getConfig().getString("api.bind", "127.0.0.1"), getConfig().getInt("api.port", 8788));
         } catch (IOException failure) {
