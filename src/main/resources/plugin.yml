@@ -26,6 +26,9 @@ permissions:
   ourserver.market.trade:
     description: Take items and offer trades
     default: true
+  ourserver.market.chest:
+    description: Bind a chest as your marketplace stock
+    default: true
   ourserver.market.admin:
     description: Look into other players' listings and cancel them
     default: op

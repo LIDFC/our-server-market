@@ -20,6 +20,8 @@ import site.vinoff.market.core.ListingType;
 import site.vinoff.market.core.MarketError;
 import site.vinoff.market.core.MarketException;
 import site.vinoff.market.core.MarketService;
+import site.vinoff.market.core.chest.ChestKind;
+import site.vinoff.market.core.model.BoundChest;
 import site.vinoff.market.core.model.Identity;
 import site.vinoff.market.core.model.Listing;
 import site.vinoff.market.core.model.PendingDelivery;
@@ -37,7 +39,7 @@ public final class MarketCommand implements CommandExecutor, TabCompleter {
 
     private static final List<String> SUBCOMMANDS =
             List.of("browse", "create", "add", "want", "publish", "take", "offer", "accept", "decline", "confirm", "cancel", "mine",
-                    "trades", "deliveries", "help", "admin");
+                    "trades", "deliveries", "chest", "help", "admin");
 
     private final MarketService market;
     private final Gui gui;
@@ -100,6 +102,7 @@ public final class MarketCommand implements CommandExecutor, TabCompleter {
                 market.cancel(uuid, requireId(args, "лота"), false);
                 player.sendMessage(Messages.info("Лот снят, предметы ждут вас: /market deliveries"));
             }
+            case "chest" -> chest(player, args);
             case "mine" -> mine(player);
             case "trades" -> trades(player);
             case "deliveries", "pending" -> deliveries(player);
@@ -109,6 +112,94 @@ public final class MarketCommand implements CommandExecutor, TabCompleter {
     }
 
     // player commands ----------------------------------------------------------------------------------------------
+
+    /**
+     * The bound chest: the player's marketplace stock.
+     *
+     * <p>Binding is done here and nowhere else. The website cannot offer it, because pointing at a block is something
+     * only somebody standing in front of it can do.
+     */
+    private void chest(Player player, String[] args) {
+        String what = args.length > 1 ? args[1].toLowerCase(Locale.ROOT) : "";
+        switch (what) {
+            case "" -> bindChest(player);
+            case "info" -> chestInfo(player);
+            case "release", "unbind" -> {
+                market.releaseChest(player.getUniqueId(), "PLAYER");
+                player.sendMessage(Messages.info("Сундук отвязан. Рынок больше не считает его вашим складом"));
+            }
+            case "stamp" -> stampChest(player, args);
+            default -> {
+                player.sendMessage(Messages.info("сундук:"));
+                player.sendMessage(Messages.hint("/market chest — привязать сундук, на который вы смотрите"));
+                player.sendMessage(Messages.hint("/market chest info — что рынок знает о вашем сундуке"));
+                player.sendMessage(Messages.hint("/market chest release — отвязать"));
+            }
+        }
+    }
+
+    private void bindChest(Player player) {
+        requirePermission(player, "ourserver.market.chest");
+        ChestLocator.Found found = ChestLocator.lookingAt(player);
+        long id = market.bindChest(
+                player.getUniqueId(),
+                player.getName(),
+                found.main().getWorld().getUID(),
+                found.main().getX(),
+                found.main().getY(),
+                found.main().getZ(),
+                found.kind(),
+                found.pairCoordinates());
+        // a freshly bound chest starts level with the marketplace, which believes nothing has happened to it yet
+        ChestLocator.writeSeq(found, 0L);
+        player.sendMessage(Messages.good(
+                (found.kind() == ChestKind.DOUBLE ? "Большой сундук" : "Сундук") + " привязан как ваш склад (#" + id + ")"));
+        // no promises that are not kept yet: the protection listener is the next piece of work
+        player.sendMessage(Messages.hint("Защита сундука от чужих рук и воронок ещё не включена"));
+        player.sendMessage(Messages.hint("Проверить, что рынок его видит: /market chest info"));
+    }
+
+    private void chestInfo(Player player) {
+        BoundChest chest = market.chestOf(player.getUniqueId())
+                .orElseThrow(() -> new MarketException(
+                        MarketError.CHEST_NOT_BOUND, "Посмотрите на сундук и наберите /market chest"));
+        player.sendMessage(Messages.info("склад #" + chest.id() + ", " + chest.kind() + ", "
+                + chest.size() + " слотов"));
+        player.sendMessage(Messages.hint("координаты: " + chest.x() + ", " + chest.y() + ", " + chest.z()));
+
+        Optional<ChestLocator.Found> blocks = ChestLocator.blocksOf(player.getServer(), chest);
+        if (blocks.isEmpty()) {
+            player.sendMessage(Messages.bad("блок не найден: сундук сломали или мир не загружен"));
+            return;
+        }
+        long onBlock = ChestLocator.readSeq(blocks.get());
+        player.sendMessage(Messages.hint("номер операции: на блоке " + onBlock + ", у рынка " + chest.appliedSeq()));
+        if (onBlock != chest.appliedSeq()) {
+            player.sendMessage(Messages.bad("блок и рынок расходятся — так выглядит откат мира"));
+        }
+    }
+
+    /**
+     * Writes a number onto the block by hand.
+     *
+     * <p>A diagnostic, and the only way to answer the one question the whole design rests on: does a number written
+     * into a chest survive a restart, and is it lost together with a chunk the server never saved? Stamp a number,
+     * stop the server two different ways, and read it back.
+     */
+    private void stampChest(Player player, String[] args) {
+        requirePermission(player, "ourserver.market.admin");
+        if (args.length < 3) {
+            throw new MarketException(MarketError.INVALID_REQUEST, "Укажите номер: /market chest stamp 7");
+        }
+        long seq = parseId(args[2], "операции");
+        BoundChest chest = market.chestOf(player.getUniqueId())
+                .orElseThrow(() -> new MarketException(MarketError.CHEST_NOT_BOUND, "Сначала привяжите сундук"));
+        ChestLocator.Found found = ChestLocator.blocksOf(player.getServer(), chest)
+                .orElseThrow(() -> new MarketException(MarketError.CHEST_MISSING, "Блок не найден"));
+        ChestLocator.writeSeq(found, seq);
+        player.sendMessage(Messages.good("На блок записан номер " + seq + ". Прочитать: /market chest info"));
+    }
+
 
     private void browse(Player player, int page) {
         int perPage = 8;
@@ -380,6 +471,9 @@ public final class MarketCommand implements CommandExecutor, TabCompleter {
                 }
             }
             return matches;
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("chest")) {
+            return List.of("info", "release");
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("create")) {
             return List.of("giveaway", "trade", "wanted", "gift");

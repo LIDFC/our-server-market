@@ -57,6 +57,7 @@ public final class OurServerMarketPlugin extends JavaPlugin {
                 MarketClock.system(), log);
 
         Icons.init(this);
+        ChestLocator.init(this);
         windows = new WindowManager(this, inventory, log);
         prompts = new ChatPrompt(this);
         Gui gui = new Gui(this, market, windows, prompts);
