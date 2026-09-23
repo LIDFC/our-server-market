@@ -561,7 +561,110 @@ public final class MarketService {
             throw new MarketException(MarketError.TOO_MANY_ITEMS, "A listing holds at most " + MAX_ITEMS_PER_LISTING + " stacks");
         }
         BoundChest chest = requireUsableChest(owner);
+        return takeFromChest(chest, owner, expectedDigest, plan, (connection, itemUids, now, txId) -> {
+            market.touchIdentity(connection, owner, ownerName, now);
+            long listingId = market.insertListing(
+                    connection,
+                    owner,
+                    type,
+                    ListingState.ACTIVE,
+                    recipient,
+                    recipientName == null ? null : recipientName.toLowerCase(java.util.Locale.ROOT),
+                    note,
+                    now,
+                    null);
+            int position = 0;
+            for (String itemUid : itemUids) {
+                market.addListingItem(connection, listingId, ItemRole.OFFERED, position++, itemUid);
+                market.insertEscrow(connection, itemUid, owner, listingId, null, TradeParty.OWNER, now);
+                market.move(
+                        connection, txId, itemUid, Holder.chest(chest.id()), Holder.listing(listingId),
+                        amountOf(connection, itemUid), now);
+            }
+            int wantedPosition = 0;
+            for (ItemBlob blob : wanted) {
+                String itemUid = market.insertItem(connection, blob, containers.dataVersion(), now);
+                market.addListingItem(connection, listingId, ItemRole.WANTED, wantedPosition++, itemUid);
+            }
+            chests.linkListing(connection, txId, listingId);
+            market.event(connection, now, "LISTING_CREATED", owner, listingId, null, txId, type.name() + " from chest");
+            return listingId;
+        });
+    }
 
+    /**
+     * Offers a trade on somebody else's listing, paying out of your own bound chest.
+     *
+     * <p>The same two steps as an offer from the hand: win the listing first with a guarded update, because losing
+     * that race costs nothing, and only then move items. What changes is where the items come from, and that half is
+     * the chest protocol, numbered and repeatable, exactly as when a listing is created.
+     *
+     * <p>The chest is demanded before the listing is claimed. A buyer with no chest who had already won the listing
+     * would leave it stuck in {@code PENDING_TRADE} until the compensation ran, and there is no reason to find that
+     * out the slow way.
+     */
+    public long offerTradeFromChest(UUID buyer, String buyerName, long listingId, String expectedDigest, ChestPlan plan) {
+        if (plan.totalStacks() > MAX_ITEMS_PER_LISTING) {
+            throw new MarketException(MarketError.TOO_MANY_ITEMS, "An offer holds at most " + MAX_ITEMS_PER_LISTING + " stacks");
+        }
+        Listing listing = requireListing(listingId);
+        if (listing.ownedBy(buyer)) {
+            throw new MarketException(MarketError.OWN_LISTING, "This is your own listing");
+        }
+        if (listing.type() == ListingType.GIVEAWAY || listing.type() == ListingType.GIFT) {
+            throw new MarketException(MarketError.INVALID_REQUEST, "This listing is free, take it instead of offering");
+        }
+        if (listing.state() == ListingState.PENDING_TRADE) {
+            throw new MarketException(MarketError.LISTING_ALREADY_TAKEN, "Somebody is already trading for this");
+        }
+        if (listing.state() != ListingState.ACTIVE) {
+            throw new MarketException(MarketError.LISTING_NOT_ACTIVE, "This listing is not open");
+        }
+        BoundChest chest = requireUsableChest(buyer);
+
+        Instant claimed = clock.now();
+        long tradeId = database.inTransaction(connection -> {
+            market.touchIdentity(connection, buyer, buyerName, claimed);
+            if (!market.transitionListing(connection, listingId, ListingState.ACTIVE, ListingState.PENDING_TRADE, claimed)) {
+                throw new MarketException(MarketError.LISTING_ALREADY_TAKEN, "Somebody is already trading for this");
+            }
+            long id = market.insertTrade(connection, listingId, buyer, TradeState.PENDING, plan.totalStacks(), claimed, null);
+            market.event(connection, claimed, "TRADE_CREATED", buyer, listingId, id, null, plan.totalStacks() + " stack(s) from chest");
+            return id;
+        });
+
+        try {
+            takeFromChest(chest, buyer, expectedDigest, plan, (connection, itemUids, now, txId) -> {
+                for (String itemUid : itemUids) {
+                    market.insertEscrow(connection, itemUid, buyer, listingId, tradeId, TradeParty.BUYER, now);
+                    market.move(
+                            connection, txId, itemUid, Holder.chest(chest.id()), Holder.trade(tradeId),
+                            amountOf(connection, itemUid), now);
+                }
+                market.event(connection, now, "ESCROW_IN", buyer, listingId, tradeId, txId, itemUids.size() + " stack(s) from chest");
+                return tradeId;
+            });
+        } catch (RuntimeException failure) {
+            compensateFailedOffer(listingId, tradeId);
+            throw failure;
+        }
+        return tradeId;
+    }
+
+    /** What an operation writes down once the items have really left the chest. */
+    @FunctionalInterface
+    private interface AfterTakenFromChest<T> {
+        T apply(Connection connection, List<String> itemUids, Instant now, String txId);
+    }
+
+    /**
+     * Takes items out of a bound chest: reserve, reach into the world, record. The only way items ever leave a chest.
+     *
+     * <p>{@code expectedDigest} is what the caller last saw the whole chest as, and it is required rather than
+     * optional: without it a replay carrying a fresh idempotency key would quietly take a second helping out of a
+     * stack that had only been partly emptied, because the slot would still hold the same item.
+     */
+    private <T> T takeFromChest(BoundChest chest, UUID owner, String expectedDigest, ChestPlan plan, AfterTakenFromChest<T> afterTaken) {
         ChestContents before = containers.read(chest);
         if (!before.snapshot().digest().equals(expectedDigest)) {
             throw new MarketException(MarketError.CHEST_CHANGED, "The chest is not what you last saw");
@@ -583,7 +686,7 @@ public final class MarketService {
         Instant started = clock.now();
         /*
          * The items are written down before anything is removed, and that ordering is the whole point: if the server
-         * dies after the chest has been emptied but before the listing exists, this table is the only place those
+         * dies after the chest has been emptied but before the operation finishes, this table is the only place those
          * items still exist, and recovery can hand them back from it.
          */
         Reserved reserved = database.inTransaction(connection -> {
@@ -616,35 +719,10 @@ public final class MarketService {
             if (!deliveries.transitionIntent(connection, txId, IntentState.INTENT, IntentState.APPLIED, now)) {
                 throw new MarketException(MarketError.STORAGE_FAILURE, "The intent record disappeared");
             }
-            market.touchIdentity(connection, owner, ownerName, now);
-            long listingId = market.insertListing(
-                    connection,
-                    owner,
-                    type,
-                    ListingState.ACTIVE,
-                    recipient,
-                    recipientName == null ? null : recipientName.toLowerCase(java.util.Locale.ROOT),
-                    note,
-                    now,
-                    null);
-            int position = 0;
-            for (String itemUid : reserved.uids()) {
-                market.addListingItem(connection, listingId, ItemRole.OFFERED, position++, itemUid);
-                market.insertEscrow(connection, itemUid, owner, listingId, null, TradeParty.OWNER, now);
-                market.move(
-                        connection, txId, itemUid, Holder.chest(chest.id()), Holder.listing(listingId),
-                        amountOf(connection, itemUid), now);
-            }
-            int wantedPosition = 0;
-            for (ItemBlob blob : wanted) {
-                String itemUid = market.insertItem(connection, blob, containers.dataVersion(), now);
-                market.addListingItem(connection, listingId, ItemRole.WANTED, wantedPosition++, itemUid);
-            }
+            T result = afterTaken.apply(connection, reserved.uids(), now, txId);
             chests.markApplied(connection, chest.id(), reserved.seq(), now);
-            chests.linkListing(connection, txId, listingId);
             deliveries.transitionIntent(connection, txId, IntentState.APPLIED, IntentState.FINALIZED, now);
-            market.event(connection, now, "LISTING_CREATED", owner, listingId, null, txId, type.name() + " from chest");
-            return listingId;
+            return result;
         });
     }
 

@@ -285,6 +285,18 @@ public final class ApiServer {
             market.releaseChest(player, "WEBSITE");
             return Json.object().field("ok", true).done();
         }
+        if (path.startsWith("/listings/") && path.endsWith("/take")) {
+            // a giveaway or a gift needs no chest at all: the items go to the queue and are collected in the game
+            long id = pathId(path.substring(0, path.length() - "/take".length()), "/listings/");
+            market.claim(player, nameOf(player), id);
+            return Json.object().field("ok", true).field("listingId", id).done();
+        }
+        if (path.startsWith("/listings/") && path.endsWith("/offer-from-chest")) {
+            long id = pathId(path.substring(0, path.length() - "/offer-from-chest".length()), "/listings/");
+            long tradeId = market.offerTradeFromChest(
+                    player, nameOf(player), id, JsonReader.requireString(body, "chestDigest"), planFrom(body));
+            return Json.object().field("ok", true).field("listingId", id).field("tradeId", tradeId).done();
+        }
         if (path.startsWith("/listings/") && path.endsWith("/cancel")) {
             long id = pathId(path.substring(0, path.length() - "/cancel".length()), "/listings/");
             market.cancel(player, id, false);
@@ -359,16 +371,22 @@ public final class ApiServer {
      * helping out of a stack that had only been partly emptied — the slot would still hold the same item, and the
      * per-slot hash would still match.
      */
-    private String createFromChest(UUID player, Map<String, Object> body) {
-        String name = market.identity(player)
+    /**
+     * The name to write down for a player.
+     *
+     * <p>Read from the marketplace's own records rather than from the request. The website knows the nickname and
+     * could send it, but then a mistake on that side would rename somebody here; the plugin has seen this player
+     * before — binding a chest is enough — so it already knows.
+     */
+    private String nameOf(UUID player) {
+        return market.identity(player)
                 .map(Identity::nameExact)
                 .orElseThrow(() -> new MarketException(
                         MarketError.PLAYER_NOT_FOUND, "The marketplace has never seen this player"));
-        site.vinoff.market.core.ListingType type = site.vinoff.market.core.ListingType.valueOf(
-                JsonReader.requireString(body, "type").toUpperCase(Locale.ROOT));
-        String digest = JsonReader.requireString(body, "chestDigest");
-        String note = JsonReader.optionalString(body, "note");
+    }
 
+    /** Which slots are to be emptied, and what is supposed to be in them. */
+    private static ChestPlan planFrom(Map<String, Object> body) {
         List<ChestPlan.Take> takes = new java.util.ArrayList<>();
         for (Map<String, Object> line : JsonReader.objectList(body, "take")) {
             takes.add(new ChestPlan.Take(
@@ -376,6 +394,17 @@ public final class ApiServer {
                     JsonReader.requireString(line, "sha256"),
                     JsonReader.requireInt(line, "amount")));
         }
+        return new ChestPlan(takes);
+    }
+
+    private String createFromChest(UUID player, Map<String, Object> body) {
+        String name = nameOf(player);
+        site.vinoff.market.core.ListingType type = site.vinoff.market.core.ListingType.valueOf(
+                JsonReader.requireString(body, "type").toUpperCase(Locale.ROOT));
+        String digest = JsonReader.requireString(body, "chestDigest");
+        String note = JsonReader.optionalString(body, "note");
+        ChestPlan plan = planFrom(body);
+
         List<ItemFactoryPort.Wanted> wishes = new java.util.ArrayList<>();
         for (Map<String, Object> line : JsonReader.objectList(body, "wanted")) {
             wishes.add(new ItemFactoryPort.Wanted(
@@ -393,8 +422,7 @@ public final class ApiServer {
             recipientName = found.nameExact();
         }
         long id = market.createListingFromChest(
-                player, name, type, recipient, recipientName, note, digest,
-                new ChestPlan(takes), items.materialise(wishes));
+                player, name, type, recipient, recipientName, note, digest, plan, items.materialise(wishes));
         return Json.object().field("ok", true).field("listingId", id).done();
     }
 
