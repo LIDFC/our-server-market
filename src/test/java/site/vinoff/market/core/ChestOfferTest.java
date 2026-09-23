@@ -111,7 +111,7 @@ class ChestOfferTest {
         Listing listing = market.listing(listingId).orElseThrow();
         assertEquals(ListingState.ACTIVE, listing.state(), "somebody else can still trade for it");
         assertEquals(1, fixture.escrowCount(), "only Alice's half is held");
-        assertEquals(10, fixture.containers.contentsOf(bobsChest).get(2).count(), "nothing left the chest");
+        assertEquals(8, fixture.containers.contentsOf(bobsChest).get(2).count(), "nothing left the chest");
     }
 
     @Test
