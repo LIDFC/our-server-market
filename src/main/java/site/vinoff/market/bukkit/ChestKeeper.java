@@ -1,11 +1,13 @@
 package site.vinoff.market.bukkit;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
 import org.bukkit.World;
 import org.bukkit.plugin.Plugin;
-import site.vinoff.market.core.MarketException;
 import site.vinoff.market.core.MarketService;
 import site.vinoff.market.core.chest.ChestIndex;
 import site.vinoff.market.core.model.BoundChest;
@@ -15,7 +17,7 @@ import site.vinoff.market.core.model.BoundChest;
  * world before anybody is allowed to touch it.
  *
  * <p>There is no login event to hang this on. A chest belongs to nobody who has to be present, so the moments when a
- * chest and the marketplace can be brought back into agreement are: the server starting, the chunk loading, somebody
+ * chest and the marketplace can be brought back into agreement are: the server starting, a chunk appearing, somebody
  * asking about the chest, and, for everything that none of those reached, a sweep every minute.
  *
  * <p>Until that agreement is reached the chest is frozen — the guard refuses to open it and the service refuses to
@@ -27,10 +29,17 @@ public final class ChestKeeper {
     /** How often chests nobody has walked near are looked at. Ticks, so: every minute. */
     private static final long SWEEP_TICKS = 20L * 60L;
 
+    /** How long to leave a chest alone after a check that did not settle it. */
+    private static final long RETRY_MS = 10_000;
+
     private final Plugin plugin;
     private final MarketService market;
     private final Logger log;
     private final ChestIndex index = new ChestIndex();
+    /** chests already waiting for the next tick, so a hundred chunk loads do not book a hundred checks */
+    private final Set<Long> queued = ConcurrentHashMap.newKeySet();
+    private final Map<Long, Long> lastTried = new ConcurrentHashMap<>();
+    private long lastComplaint;
 
     public ChestKeeper(Plugin plugin, MarketService market, Logger log) {
         this.plugin = plugin;
@@ -74,6 +83,34 @@ public final class ChestKeeper {
 
     public void released(long chestId) {
         index.forget(chestId);
+        lastTried.remove(chestId);
+    }
+
+    /**
+     * Checks a chest on the next tick rather than now.
+     *
+     * <p>For callers that are in the middle of something the server does not want re-entered: a chunk being loaded, an
+     * inventory being opened. Reconciling reads blocks and may load a chunk, and doing either from inside those is
+     * how a plugin takes the main thread down with it.
+     */
+    public void checkSoon(long chestId) {
+        if (!queued.add(chestId)) {
+            return;
+        }
+        try {
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                queued.remove(chestId);
+                Long tried = lastTried.get(chestId);
+                if (tried != null && System.currentTimeMillis() - tried < RETRY_MS) {
+                    // it failed a moment ago; the sweep will come back to it rather than us trying on every event
+                    return;
+                }
+                check(chestId);
+            });
+        } catch (RuntimeException stopping) {
+            // the scheduler refuses new work while the plugin is being disabled; the next run will pick it up
+            queued.remove(chestId);
+        }
     }
 
     /**
@@ -83,12 +120,11 @@ public final class ChestKeeper {
      * now stays frozen, which is the safe state; the next sweep tries again.
      */
     public void check(long chestId) {
+        lastTried.put(chestId, System.currentTimeMillis());
         try {
             market.reconcileChest(chestId);
-        } catch (MarketException refused) {
-            log.warning("Chest #" + chestId + " could not be checked: " + refused.getMessage());
         } catch (RuntimeException failure) {
-            log.warning("Chest #" + chestId + " could not be checked: " + failure);
+            complain(chestId, failure);
         }
         Optional<BoundChest> after = market.chestById(chestId);
         if (after.isEmpty() || !after.get().usable()) {
@@ -98,28 +134,12 @@ public final class ChestKeeper {
         index.setSettled(chestId, !after.get().settling(market.bootId()));
     }
 
-    /** Checks the chests in a chunk that has just loaded, and only those that are still waiting. */
-    public void chunkLoaded(World world, int chunkX, int chunkZ) {
-        if (index.isEmpty()) {
-            return;
-        }
-        for (long chestId : index.inChunk(world.getUID(), chunkX, chunkZ)) {
-            if (index.isSettled(chestId)) {
-                // a chunk a player walks in and out of would otherwise ask the database every time
-                continue;
-            }
-            checkIfWaiting(chestId);
-        }
-    }
-
-    private void checkIfWaiting(long chestId) {
-        Optional<BoundChest> chest = market.chestById(chestId);
-        if (chest.isEmpty() || !chest.get().usable()) {
-            index.forget(chestId);
-            return;
-        }
-        if (chest.get().settling(market.bootId())) {
-            check(chestId);
+    /** One line a minute is enough to find a problem; a line per attempt is an outage of its own. */
+    private void complain(long chestId, RuntimeException failure) {
+        long now = System.currentTimeMillis();
+        if (now - lastComplaint > 60_000) {
+            lastComplaint = now;
+            log.warning("Chest #" + chestId + " could not be checked: " + failure);
         }
     }
 
@@ -128,11 +148,17 @@ public final class ChestKeeper {
         if (index.isEmpty()) {
             return;
         }
-        List<BoundChest> waiting = market.boundChests();
-        for (BoundChest chest : waiting) {
+        List<BoundChest> all;
+        try {
+            all = market.boundChests();
+        } catch (RuntimeException failure) {
+            complain(0, failure);
+            return;
+        }
+        for (BoundChest chest : all) {
             index.remember(chest, !chest.settling(market.bootId()));
         }
-        for (BoundChest chest : waiting) {
+        for (BoundChest chest : all) {
             if (!chest.settling(market.bootId())) {
                 continue;
             }

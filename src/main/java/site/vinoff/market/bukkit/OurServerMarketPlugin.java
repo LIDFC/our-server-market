@@ -96,8 +96,14 @@ public final class OurServerMarketPlugin extends JavaPlugin {
                     + report.handoversAwaitingLogin() + " handover(s) waiting for their player to log in.");
         }
 
-        // after the recovery above, so a chest whose operation was cut short is settled with the rest of them
-        chests.start();
+        // after the recovery above, so a chest whose operation was cut short is settled with the rest of them.
+        // Wrapped because the rest of the marketplace does not depend on chests: a marketplace that refuses to
+        // start is worse than one where nobody can use their chest until the next build.
+        try {
+            chests.start();
+        } catch (RuntimeException failure) {
+            log.severe("Bound chests could not be started, the marketplace runs without them: " + failure);
+        }
 
         scheduleExpiry(market, log);
         startApi(market, deliveries, new BukkitItemFactory(mainThread), log);
